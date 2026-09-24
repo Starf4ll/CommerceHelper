@@ -4,6 +4,7 @@ const dvui = @import("dvui");
 const goods_mod = @import("../data/goods.zig");
 const routes_mod = @import("../data/routes.zig");
 const config_mod = @import("../data/config.zig");
+const onboarding = @import("onboarding.zig");
 
 pub const GoodsMap = goods_mod.GoodsMap;
 pub const RouteData = routes_mod.RouteData;
@@ -31,6 +32,7 @@ pub const AppState = struct {
 
     needs_wizard: bool,
     load_error: ?LoadError,
+    wizard_state: onboarding.WizardState = .{},
 
     pub fn init(allocator: std.mem.Allocator, exe_dir: []const u8) AppState {
         var state = AppState{
@@ -164,8 +166,7 @@ pub const AppState = struct {
     }
 
     fn renderWizardPlaceholder(self: *AppState) !void {
-        _ = self;
-        // Story 1.3 will implement the real wizard; for now this is intentionally blank.
+        try onboarding.render(&self.wizard_state, self);
     }
 
     fn renderMainArea(self: *AppState) !void {
