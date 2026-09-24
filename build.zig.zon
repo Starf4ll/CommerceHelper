@@ -1,0 +1,13 @@
+.{
+    .name = .CommerceHelper,
+    .fingerprint = 0xb7752d0790a446c6,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.14.1",
+    .paths = .{""},
+    .dependencies = .{
+        .dvui = .{
+            .url = "https://github.com/david-vanderson/dvui/archive/refs/tags/v0.3.0.tar.gz",
+            .hash = "dvui-0.3.0-AQFJmanh0gAndZ1v77zAUsbScbnk5i_3iNzMnahnAl2E",
+        },
+    },
+}

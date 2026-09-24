@@ -1,0 +1,15 @@
+# Zig
+.zig-cache/
+zig-out/
+*.o
+
+# Claude
+.claude/
+_bmad/
+_bmad-output/
+
+# Local artifacts
+static/
+goods.json
+routes.json
+routes.json.bak
