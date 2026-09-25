@@ -4,6 +4,7 @@ const dvui = @import("dvui");
 const goods_mod = @import("../data/goods.zig");
 const routes_mod = @import("../data/routes.zig");
 const config_mod = @import("../data/config.zig");
+const matrix_mod = @import("../engine/matrix.zig");
 const onboarding = @import("onboarding.zig");
 const settings = @import("settings.zig");
 const threshold = @import("threshold.zig");
@@ -12,6 +13,7 @@ const live = @import("live.zig");
 pub const GoodsMap = goods_mod.GoodsMap;
 pub const RouteData = routes_mod.RouteData;
 pub const Config = config_mod.Config;
+pub const RouteMatrix = matrix_mod.RouteMatrix;
 
 // ── LoadError ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +32,7 @@ pub const AppState = struct {
     exe_dir: []const u8,
 
     routes: ?RouteData,
+    route_matrix: ?RouteMatrix,
     goods: ?GoodsMap,
     config: ?Config,
 
@@ -47,6 +50,7 @@ pub const AppState = struct {
             .allocator = allocator,
             .exe_dir = exe_dir,
             .routes = null,
+            .route_matrix = null,
             .goods = null,
             .config = null,
             .needs_wizard = false,
@@ -74,6 +78,7 @@ pub const AppState = struct {
         // 1. Load routes.json — required; on failure set load_error and return.
         if (routes_mod.loadRoutes(self.allocator, self.exe_dir)) |r| {
             self.routes = r;
+            self.route_matrix = matrix_mod.build(r);
         } else |err| {
             self.setLoadError(.routes, "routes.json", err);
             return;
