@@ -1,5 +1,39 @@
 const std = @import("std");
 
+pub const OUTPOST_KEYS: [12][]const u8 = .{
+    "tirChonaill",
+    "dunbarton",
+    "bangor",
+    "cobh",
+    "tara",
+    "emainMacha",
+    "taillteann",
+    "belvast",
+    "qilla",
+    "cor",
+    "filia",
+    "vales",
+};
+
+pub const OUTPOST_DISPLAY_NAMES: [12][]const u8 = .{
+    "Tir Chonaill",
+    "Dunbarton",
+    "Bangor",
+    "Cobh",
+    "Tara",
+    "Emain Macha",
+    "Taillteann",
+    "Belvast",
+    "Qilla",
+    "Cor",
+    "Filia",
+    "Vales",
+};
+
+comptime {
+    std.debug.assert(OUTPOST_KEYS.len == OUTPOST_DISPLAY_NAMES.len);
+}
+
 pub const TransportFlags = struct {
     backpack: bool = false,
     handcart: bool = false,
