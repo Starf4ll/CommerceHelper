@@ -78,6 +78,17 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/data/config.zig"),
     });
     optimizer_tests.root_module.addImport("../data/config.zig", config_mod);
+    // goods.zig imports "embedded_assets"; create a test-side embedded_assets module
+    // so that the goods module resolves its @import("embedded_assets") when compiled
+    // as a test dependency (same assets/ root as the exe module above).
+    const test_embedded_assets_mod = b.createModule(.{
+        .root_source_file = b.path("assets/embedded.zig"),
+    });
+    const goods_mod = b.createModule(.{
+        .root_source_file = b.path("src/data/goods.zig"),
+        .imports = &.{.{ .name = "embedded_assets", .module = test_embedded_assets_mod }},
+    });
+    optimizer_tests.root_module.addImport("../data/goods.zig", goods_mod);
     const run_optimizer_tests = b.addRunArtifact(optimizer_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_optimizer_tests.step);
