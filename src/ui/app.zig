@@ -5,6 +5,7 @@ const goods_mod = @import("../data/goods.zig");
 const routes_mod = @import("../data/routes.zig");
 const config_mod = @import("../data/config.zig");
 const onboarding = @import("onboarding.zig");
+const settings = @import("settings.zig");
 
 pub const GoodsMap = goods_mod.GoodsMap;
 pub const RouteData = routes_mod.RouteData;
@@ -33,6 +34,9 @@ pub const AppState = struct {
     needs_wizard: bool,
     load_error: ?LoadError,
     wizard_state: onboarding.WizardState = .{},
+    engine_dirty: bool = false,
+    show_settings: bool = false,
+    settings_state: settings.SettingsState = .{},
 
     pub fn init(allocator: std.mem.Allocator, exe_dir: []const u8) AppState {
         var state = AppState{
@@ -170,7 +174,12 @@ pub const AppState = struct {
     }
 
     fn renderMainArea(self: *AppState) !void {
-        _ = self;
-        // Story 1.5+ will populate the main content area.
+        if (self.show_settings) {
+            try settings.render(&self.settings_state, self);
+        } else {
+            if (dvui.button(@src(), "Open Settings", .{}, .{})) {
+                self.show_settings = true;
+            }
+        }
     }
 };
