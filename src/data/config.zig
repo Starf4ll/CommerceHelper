@@ -45,6 +45,34 @@ pub const TransportFlags = struct {
     tradersSkiff: bool = false,
 };
 
+pub const Transport = struct {
+    weightCapacity: u32,
+    slotCount: u32,
+    speedFactor: f64,
+};
+
+pub const TransportStatsTable = struct {
+    backpack: Transport,
+    handcart: Transport,
+    wagon: Transport,
+    packElephant: Transport,
+    alpaca: Transport,
+    dogSled: Transport,
+    camel: Transport,
+    tradersSkiff: Transport,
+};
+
+pub const TRANSPORT_STATS: TransportStatsTable = .{
+    .backpack = .{ .weightCapacity = 400, .slotCount = 4, .speedFactor = 0.91 },
+    .handcart = .{ .weightCapacity = 800, .slotCount = 6, .speedFactor = 1.00 },
+    .wagon = .{ .weightCapacity = 900, .slotCount = 7, .speedFactor = 1.90 },
+    .packElephant = .{ .weightCapacity = 1700, .slotCount = 7, .speedFactor = 1.37 },
+    .alpaca = .{ .weightCapacity = 1100, .slotCount = 10, .speedFactor = 1.90 },
+    .dogSled = .{ .weightCapacity = 700, .slotCount = 11, .speedFactor = 1.86 },
+    .camel = .{ .weightCapacity = 1400, .slotCount = 7, .speedFactor = 2.15 },
+    .tradersSkiff = .{ .weightCapacity = 1200, .slotCount = 8, .speedFactor = 2.40 },
+};
+
 pub const MerchantRatings = struct {
     tirChonaill: u8 = 1,
     dunbarton: u8 = 1,
