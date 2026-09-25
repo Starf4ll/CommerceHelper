@@ -64,4 +64,21 @@ pub fn build(b: *std.Build) void {
     }
     const run_step = b.step("run", "Run CommerceHelper");
     run_step.dependOn(&run_cmd.step);
+
+    // `zig build test` — run optimizer unit tests
+    const optimizer_tests = b.addTest(.{
+        .root_source_file = b.path("src/engine/optimizer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // optimizer.zig uses @import("../data/config.zig") as a relative file path;
+    // when it is a test root the relative import escapes the module boundary.
+    // Register config.zig as a named module matching that exact import string.
+    const config_mod = b.createModule(.{
+        .root_source_file = b.path("src/data/config.zig"),
+    });
+    optimizer_tests.root_module.addImport("../data/config.zig", config_mod);
+    const run_optimizer_tests = b.addRunArtifact(optimizer_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_optimizer_tests.step);
 }
