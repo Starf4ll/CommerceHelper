@@ -33,7 +33,9 @@ const OwnedTransport = struct {
 
 /// Returns one optional OwnedTransport per TransportFlags field, checked
 /// explicitly — TransportFlags/TRANSPORT_STATS have no array or iterator.
-fn ownedTransports(flags: config_mod.TransportFlags) [8]?OwnedTransport {
+/// Public so engine/live.zig (Story 3.2) can reuse it instead of a third
+/// hand-enumeration of TransportFlags.
+pub fn ownedTransports(flags: config_mod.TransportFlags) [8]?OwnedTransport {
     return .{
         if (flags.backpack) OwnedTransport{ .name = "Backpack", .transport = config_mod.TRANSPORT_STATS.backpack } else null,
         if (flags.handcart) OwnedTransport{ .name = "Handcart", .transport = config_mod.TRANSPORT_STATS.handcart } else null,

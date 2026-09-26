@@ -113,6 +113,23 @@ pub fn build(b: *std.Build) void {
     const run_threshold_tests = b.addRunArtifact(threshold_tests);
     test_step.dependOn(&run_threshold_tests.step);
 
+    // `zig build test` — run Live Mode calculation engine unit tests (Story 3.2)
+    const live_tests = b.addTest(.{
+        .root_source_file = b.path("src/engine/live.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // live.zig (and its sibling engine/matrix.zig, engine/optimizer.zig,
+    // engine/threshold.zig, pulled in via same-directory relative imports)
+    // escapes the test root's module boundary (src/engine/) via
+    // "../data/*.zig" — register each exact import string, reusing the
+    // modules created above, same convention as threshold_tests.
+    live_tests.root_module.addImport("../data/config.zig", config_mod);
+    live_tests.root_module.addImport("../data/goods.zig", goods_mod);
+    live_tests.root_module.addImport("../data/routes.zig", routes_mod);
+    const run_live_tests = b.addRunArtifact(live_tests);
+    test_step.dependOn(&run_live_tests.step);
+
     // `zig build test` — run routes data-layer unit tests
     const routes_tests = b.addTest(.{
         .root_source_file = b.path("src/data/routes.zig"),
@@ -152,16 +169,51 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/engine/matrix.zig"),
         .imports = &.{.{ .name = "../data/routes.zig", .module = routes_mod }},
     });
+    // engine/optimizer.zig is reached the same way, both by engine/threshold.zig
+    // and (below) by engine/live.zig's own sibling import ("optimizer.zig") —
+    // build ONE module for it up front and have both override their
+    // sibling-import name to point at it. Zig also flatly rejects the same
+    // source file backing two independently auto-resolved modules within one
+    // compilation ("file exists in multiple modules"), which is what an
+    // unregistered import from two different parent modules produces.
+    const engine_optimizer_mod = b.createModule(.{
+        .root_source_file = b.path("src/engine/optimizer.zig"),
+        .imports = &.{
+            .{ .name = "../data/config.zig", .module = config_mod },
+            .{ .name = "../data/goods.zig", .module = goods_mod },
+        },
+    });
     const engine_threshold_mod = b.createModule(.{
         .root_source_file = b.path("src/engine/threshold.zig"),
         .imports = &.{
             .{ .name = "../data/config.zig", .module = config_mod },
             .{ .name = "../data/goods.zig", .module = goods_mod },
             .{ .name = "matrix.zig", .module = engine_matrix_mod },
+            .{ .name = "optimizer.zig", .module = engine_optimizer_mod },
         },
     });
     app_tests.root_module.addImport("../engine/matrix.zig", engine_matrix_mod);
     app_tests.root_module.addImport("../engine/threshold.zig", engine_threshold_mod);
+    // app.zig also imports "../engine/live.zig" (Story 3.2) directly, for
+    // AppState.calculateLive(). engine/live.zig itself reaches
+    // engine/matrix.zig, engine/optimizer.zig and engine/threshold.zig via
+    // its own sibling imports — override all three to the exact same module
+    // instances already built above, for the same reason matrix.zig and
+    // optimizer.zig are unified above: two separately-compiled instances of
+    // the same file would produce distinct, incompatible types (RouteMatrix,
+    // OriginResult) on either side of AppState's fields, or outright
+    // conflict at the module-graph level (as optimizer.zig did above).
+    const engine_live_mod = b.createModule(.{
+        .root_source_file = b.path("src/engine/live.zig"),
+        .imports = &.{
+            .{ .name = "../data/config.zig", .module = config_mod },
+            .{ .name = "../data/goods.zig", .module = goods_mod },
+            .{ .name = "matrix.zig", .module = engine_matrix_mod },
+            .{ .name = "optimizer.zig", .module = engine_optimizer_mod },
+            .{ .name = "threshold.zig", .module = engine_threshold_mod },
+        },
+    });
+    app_tests.root_module.addImport("../engine/live.zig", engine_live_mod);
     const run_app_tests = b.addRunArtifact(app_tests);
     test_step.dependOn(&run_app_tests.step);
 }
