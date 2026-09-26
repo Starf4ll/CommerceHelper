@@ -45,6 +45,7 @@ pub const AppState = struct {
     settings_state: settings.SettingsState = .{},
     active_tab: enum { threshold, live } = .threshold,
     origin_error: ?[]const u8 = null,
+    threshold_state: threshold.ThresholdState = .{},
 
     // ── Threshold engine cache (Story 2.4) ────────────────────────────────────
     // One slot per Outpost (index matches OUTPOST_KEYS/config.zig order).
@@ -362,6 +363,9 @@ pub const AppState = struct {
         self.allocator.free(old_origin);
         self.engine_dirty = true;
         self.origin_error = null;
+        // A threshold-add/remove error from the previous Origin is no longer
+        // relevant once the Origin has changed.
+        self.threshold_state.error_msg = null;
         // TODO(Epic 3): clear live inputs here
     }
 
@@ -382,6 +386,101 @@ pub const AppState = struct {
         self.route_matrix = matrix_mod.build(self.routes.?);
         self.threshold_cache_stale = true;
         self.settings_state.write_error = null;
+    }
+
+    /// Validates and inserts `value` into `config.thresholds` at its sorted
+    /// position, persists the config, and marks the threshold cache stale.
+    /// On any rejection, `self.config` is left untouched and
+    /// `threshold_state.error_msg` is set; on success it is cleared.
+    /// Mirrors the `handleOriginChange`/`saveRoutes` setter convention (AD-4)
+    /// — ui/threshold.zig never calls config_mod.writeConfig directly.
+    pub fn addThreshold(self: *AppState, value: u32) enum { ok, invalid, duplicate, full } {
+        var cfg = self.config.?;
+        const count = cfg.thresholdCount;
+
+        if (value == 0) {
+            self.threshold_state.error_msg = "Threshold must be a positive integer";
+            return .invalid;
+        }
+
+        for (cfg.thresholds[0..count]) |v| {
+            if (v == value) {
+                self.threshold_state.error_msg = "Threshold already exists";
+                return .duplicate;
+            }
+        }
+
+        if (count >= config_mod.MAX_THRESHOLDS) {
+            self.threshold_state.error_msg = "Maximum thresholds reached";
+            return .full;
+        }
+
+        // Find the sorted insert position, then shift everything from there
+        // right by one to make room.
+        var insert_idx: usize = count;
+        for (cfg.thresholds[0..count], 0..) |v, i| {
+            if (value < v) {
+                insert_idx = i;
+                break;
+            }
+        }
+        var i: usize = count;
+        while (i > insert_idx) : (i -= 1) {
+            cfg.thresholds[i] = cfg.thresholds[i - 1];
+        }
+        cfg.thresholds[insert_idx] = value;
+        cfg.thresholdCount = count + 1;
+
+        config_mod.writeConfig(cfg, self.allocator, self.exe_dir) catch |err| {
+            // self.config was never mutated (we worked on a local copy) — no
+            // partial state to revert.
+            self.threshold_state.error_msg = @errorName(err);
+            return .invalid;
+        };
+
+        self.config = cfg;
+        self.threshold_cache_stale = true;
+        self.threshold_state.error_msg = null;
+        return .ok;
+    }
+
+    /// Removes the threshold at `index` (as taken directly from the render
+    /// loop's `slot.rows` index — sweepOrigin documents rows[i] as built from
+    /// cfg.thresholds[0..thresholdCount] in the same order, so index
+    /// alignment holds without re-deriving it from the value). Enforces the
+    /// minimum-1 rule (FR-8), persists the config, and marks the threshold
+    /// cache stale. On any rejection, `self.config` is left untouched and
+    /// `threshold_state.error_msg` is set; on success it is cleared.
+    pub fn removeThreshold(self: *AppState, index: usize) void {
+        var cfg = self.config.?;
+        const count = cfg.thresholdCount;
+
+        if (count <= 1) {
+            self.threshold_state.error_msg = "At least one threshold is required";
+            return;
+        }
+        if (index >= count) {
+            self.threshold_state.error_msg = "Invalid threshold index";
+            return;
+        }
+
+        var i = index;
+        while (i < count - 1) : (i += 1) {
+            cfg.thresholds[i] = cfg.thresholds[i + 1];
+        }
+        cfg.thresholds[count - 1] = 0;
+        cfg.thresholdCount = count - 1;
+
+        config_mod.writeConfig(cfg, self.allocator, self.exe_dir) catch |err| {
+            // self.config was never mutated (we worked on a local copy) — no
+            // partial state to revert.
+            self.threshold_state.error_msg = @errorName(err);
+            return;
+        };
+
+        self.config = cfg;
+        self.threshold_cache_stale = true;
+        self.threshold_state.error_msg = null;
     }
 };
 
@@ -508,6 +607,332 @@ test "saveRoutes failure: write error reverts routes and sets write_error, leave
 
     // route_matrix and threshold_cache_stale left untouched.
     try std.testing.expect(std.meta.eql(state.route_matrix.?, sentinel_matrix));
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+// ── addThreshold/removeThreshold tests (Story 2.7) ──────────────────────────
+// Directly construct a minimal AppState — no AppState.init / real dvui window
+// needed, since these setters touch only allocator, exe_dir, config,
+// threshold_state.error_msg and threshold_cache_stale. Built the same way as
+// the saveRoutes tests above.
+
+fn makeThresholdTestState(allocator: std.mem.Allocator, exe_dir: []const u8, cfg: Config) AppState {
+    return AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = null,
+        .route_matrix = null,
+        .goods = null,
+        .config = cfg,
+        .needs_wizard = false,
+        .load_error = null,
+        .threshold_cache_stale = false,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
+    };
+}
+
+test "addThreshold valid value: inserted at sorted position, persisted, cache invalidated" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.transports.backpack = true; // loadConfig requires >=1 transport to accept the round-trip
+    cfg.thresholds[0] = 100;
+    cfg.thresholds[1] = 300;
+    cfg.thresholdCount = 2;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    const outcome = state.addThreshold(250);
+    try std.testing.expect(outcome == .ok);
+
+    // Inserted at the correct sorted position (between 100 and 300).
+    try std.testing.expectEqual(@as(u8, 3), state.config.?.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 100), state.config.?.thresholds[0]);
+    try std.testing.expectEqual(@as(u32, 250), state.config.?.thresholds[1]);
+    try std.testing.expectEqual(@as(u32, 300), state.config.?.thresholds[2]);
+
+    // Persisted to config.json.
+    const loaded = config_mod.loadConfig(allocator, exe_dir).?;
+    defer allocator.free(loaded.origin);
+    try std.testing.expectEqual(@as(u8, 3), loaded.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 250), loaded.thresholds[1]);
+
+    // Cache invalidated; error cleared.
+    try std.testing.expect(state.threshold_cache_stale == true);
+    try std.testing.expect(state.threshold_state.error_msg == null);
+}
+
+test "addThreshold valid value: inserted before the first existing element" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.thresholds[0] = 100;
+    cfg.thresholds[1] = 300;
+    cfg.thresholdCount = 2;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    const outcome = state.addThreshold(50);
+    try std.testing.expect(outcome == .ok);
+
+    try std.testing.expectEqual(@as(u8, 3), state.config.?.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 50), state.config.?.thresholds[0]);
+    try std.testing.expectEqual(@as(u32, 100), state.config.?.thresholds[1]);
+    try std.testing.expectEqual(@as(u32, 300), state.config.?.thresholds[2]);
+}
+
+test "addThreshold valid value: inserted after the last existing element" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.thresholds[0] = 100;
+    cfg.thresholds[1] = 300;
+    cfg.thresholdCount = 2;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    const outcome = state.addThreshold(500);
+    try std.testing.expect(outcome == .ok);
+
+    try std.testing.expectEqual(@as(u8, 3), state.config.?.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 100), state.config.?.thresholds[0]);
+    try std.testing.expectEqual(@as(u32, 300), state.config.?.thresholds[1]);
+    try std.testing.expectEqual(@as(u32, 500), state.config.?.thresholds[2]);
+}
+
+test "addThreshold duplicate: rejected, config and file unchanged" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.thresholds[0] = 100;
+    cfg.thresholdCount = 1;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    const outcome = state.addThreshold(100);
+    try std.testing.expect(outcome == .duplicate);
+    try std.testing.expectEqual(@as(u8, 1), state.config.?.thresholdCount);
+    try std.testing.expectEqualStrings("Threshold already exists", state.threshold_state.error_msg.?);
+
+    // Nothing was ever written.
+    if (tmp.dir.access("config.json", .{})) {
+        try std.testing.expect(false);
+    } else |err| {
+        try std.testing.expect(err == error.FileNotFound);
+    }
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+test "addThreshold zero: rejected with positive-integer error" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.thresholds[0] = 100;
+    cfg.thresholdCount = 1;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    const outcome = state.addThreshold(0);
+    try std.testing.expect(outcome == .invalid);
+    try std.testing.expectEqual(@as(u8, 1), state.config.?.thresholdCount);
+    try std.testing.expectEqualStrings("Threshold must be a positive integer", state.threshold_state.error_msg.?);
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+test "addThreshold at capacity: rejected with maximum-reached error" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    var i: u32 = 0;
+    while (i < config_mod.MAX_THRESHOLDS) : (i += 1) {
+        cfg.thresholds[i] = (i + 1) * 10; // 10, 20, .. 320 — all distinct
+    }
+    cfg.thresholdCount = config_mod.MAX_THRESHOLDS;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    const outcome = state.addThreshold(5000); // not a duplicate, but no room
+    try std.testing.expect(outcome == .full);
+    try std.testing.expectEqual(@as(u8, config_mod.MAX_THRESHOLDS), state.config.?.thresholdCount);
+    try std.testing.expectEqualStrings("Maximum thresholds reached", state.threshold_state.error_msg.?);
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+test "addThreshold write failure: config left unchanged, error_msg set to @errorName" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_root);
+    // A subdirectory that is never created — writeFile's parent-directory
+    // lookup fails, forcing writeConfig to return an error.
+    const exe_dir = try std.fs.path.join(allocator, &.{ tmp_root, "does_not_exist" });
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.thresholds[0] = 100;
+    cfg.thresholdCount = 1;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    const outcome = state.addThreshold(200);
+    try std.testing.expect(outcome == .invalid);
+    // In-memory config left exactly as before the call.
+    try std.testing.expectEqual(@as(u8, 1), state.config.?.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 100), state.config.?.thresholds[0]);
+    try std.testing.expect(state.threshold_state.error_msg != null);
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+test "removeThreshold normal: removed, remaining values shift left, persisted" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.transports.backpack = true; // loadConfig requires >=1 transport to accept the round-trip
+    cfg.thresholds[0] = 100;
+    cfg.thresholds[1] = 200;
+    cfg.thresholds[2] = 300;
+    cfg.thresholdCount = 3;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    state.removeThreshold(1); // remove the middle value (200)
+
+    try std.testing.expectEqual(@as(u8, 2), state.config.?.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 100), state.config.?.thresholds[0]);
+    try std.testing.expectEqual(@as(u32, 300), state.config.?.thresholds[1]);
+
+    const loaded = config_mod.loadConfig(allocator, exe_dir).?;
+    defer allocator.free(loaded.origin);
+    try std.testing.expectEqual(@as(u8, 2), loaded.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 300), loaded.thresholds[1]);
+
+    try std.testing.expect(state.threshold_cache_stale == true);
+    try std.testing.expect(state.threshold_state.error_msg == null);
+}
+
+test "removeThreshold last remaining: rejected, list unchanged" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.thresholds[0] = 100;
+    cfg.thresholdCount = 1;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    state.removeThreshold(0);
+
+    try std.testing.expectEqual(@as(u8, 1), state.config.?.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 100), state.config.?.thresholds[0]);
+    try std.testing.expectEqualStrings("At least one threshold is required", state.threshold_state.error_msg.?);
+
+    // Nothing was ever written.
+    if (tmp.dir.access("config.json", .{})) {
+        try std.testing.expect(false);
+    } else |err| {
+        try std.testing.expect(err == error.FileNotFound);
+    }
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+test "removeThreshold invalid index: rejected, list unchanged" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.thresholds[0] = 100;
+    cfg.thresholds[1] = 200;
+    cfg.thresholdCount = 2;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    state.removeThreshold(2); // == thresholdCount, out of range
+
+    try std.testing.expectEqual(@as(u8, 2), state.config.?.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 100), state.config.?.thresholds[0]);
+    try std.testing.expectEqual(@as(u32, 200), state.config.?.thresholds[1]);
+    try std.testing.expect(state.threshold_state.error_msg != null);
+
+    // Nothing was ever written.
+    if (tmp.dir.access("config.json", .{})) {
+        try std.testing.expect(false);
+    } else |err| {
+        try std.testing.expect(err == error.FileNotFound);
+    }
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+test "removeThreshold write failure: config left unchanged, error_msg set to @errorName" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_root);
+    // A subdirectory that is never created — writeFile's parent-directory
+    // lookup fails, forcing writeConfig to return an error.
+    const exe_dir = try std.fs.path.join(allocator, &.{ tmp_root, "does_not_exist" });
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.thresholds[0] = 100;
+    cfg.thresholds[1] = 200;
+    cfg.thresholdCount = 2;
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    state.removeThreshold(0);
+
+    // In-memory config left exactly as before the call.
+    try std.testing.expectEqual(@as(u8, 2), state.config.?.thresholdCount);
+    try std.testing.expectEqual(@as(u32, 100), state.config.?.thresholds[0]);
+    try std.testing.expectEqual(@as(u32, 200), state.config.?.thresholds[1]);
+    try std.testing.expect(state.threshold_state.error_msg != null);
     try std.testing.expect(state.threshold_cache_stale == false);
 }
 
