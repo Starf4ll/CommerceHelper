@@ -210,6 +210,7 @@ pub fn render(state: *SettingsState, app_state: *AppState) !void {
             app_state.config.? = before; // revert in-frame mutations
         };
         app_state.engine_dirty = true;
+        app_state.threshold_cache_stale = true;
         state.write_error = null;
     }
 

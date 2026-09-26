@@ -88,6 +88,9 @@ pub const MerchantRatings = struct {
     vales: u8 = 1,
 };
 
+pub const MAX_THRESHOLDS: usize = 32;
+pub const DEFAULT_THRESHOLDS = [_]u32{ 50, 100, 150, 200, 300, 400, 500, 600, 800, 1000 };
+
 pub const Config = struct {
     origin: []const u8 = "",
     transports: TransportFlags = .{},
@@ -96,7 +99,33 @@ pub const Config = struct {
     merchantRatings: MerchantRatings = .{},
     speedBonus: u32 = 0,
     gearDiscount: u32 = 0,
+    thresholds: [MAX_THRESHOLDS]u32 = blk: {
+        var arr = [_]u32{0} ** MAX_THRESHOLDS;
+        for (DEFAULT_THRESHOLDS, 0..) |v, i| arr[i] = v;
+        break :blk arr;
+    },
+    thresholdCount: u8 = DEFAULT_THRESHOLDS.len,
 };
+
+/// Returns the player's Merchant Rating at the given Outpost index (0-11,
+/// matching OUTPOST_KEYS order). Reusable Origin-indexed rating lookup.
+pub fn merchantRatingAt(ratings: MerchantRatings, outpost_idx: usize) u8 {
+    return switch (outpost_idx) {
+        0 => ratings.tirChonaill,
+        1 => ratings.dunbarton,
+        2 => ratings.bangor,
+        3 => ratings.cobh,
+        4 => ratings.tara,
+        5 => ratings.emainMacha,
+        6 => ratings.taillteann,
+        7 => ratings.belvast,
+        8 => ratings.qilla,
+        9 => ratings.cor,
+        10 => ratings.filia,
+        11 => ratings.vales,
+        else => unreachable,
+    };
+}
 
 const max_file_size = 1 * 1024 * 1024; // 1 MiB
 
@@ -127,6 +156,8 @@ pub fn loadConfig(allocator: std.mem.Allocator, exe_dir: []const u8) ?Config {
         .merchantRatings = parsed.value.merchantRatings,
         .speedBonus = parsed.value.speedBonus,
         .gearDiscount = parsed.value.gearDiscount,
+        .thresholds = parsed.value.thresholds,
+        .thresholdCount = parsed.value.thresholdCount,
     };
 
     // A wizard-completed config must have at least one transport selected.
@@ -155,6 +186,14 @@ pub fn loadConfig(allocator: std.mem.Allocator, exe_dir: []const u8) ?Config {
         (mr.filia >= 1 and mr.filia <= 9) and
         (mr.vales >= 1 and mr.vales <= 9);
     if (!ratings_valid) {
+        allocator.free(cfg.origin);
+        return null;
+    }
+
+    // thresholdCount indexes into the fixed-size `thresholds` array
+    // (cfg.thresholds[0..cfg.thresholdCount] in sweepOrigin) — a corrupt or
+    // hand-edited value greater than MAX_THRESHOLDS would slice out of bounds.
+    if (cfg.thresholdCount > MAX_THRESHOLDS) {
         allocator.free(cfg.origin);
         return null;
     }
