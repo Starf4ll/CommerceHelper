@@ -16,7 +16,7 @@ pub const GoodsMap = std.StringHashMap([]Good);
 
 const DEFAULT_GOODS_JSON: []const u8 = embedded_assets.DEFAULT_GOODS_JSON;
 
-const max_file_size = 4 * 1024 * 1024; // 4 MiB
+pub const max_file_size = 4 * 1024 * 1024; // 4 MiB
 
 /// Load goods.json from exe_dir.  Returns a GoodsMap whose keys and Good
 /// string fields are all allocated from `allocator`.  Caller owns the result
