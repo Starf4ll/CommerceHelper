@@ -36,8 +36,8 @@ pub fn main() !void {
         .registered_class = window_class,
         .dvui_gpa = gpa,
         .allocator = gpa,
-        .size = .{ .w = 800.0, .h = 600.0 },
-        .min_size = .{ .w = 250.0, .h = 350.0 },
+        .size = .{ .w = 1050.0, .h = 600.0 },
+        .min_size = .{ .w = 600.0, .h = 300.0 },
         .vsync = true,
         .title = "CommerceHelper",
     });
