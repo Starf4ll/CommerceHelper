@@ -8,6 +8,13 @@ const config_mod = @import("../data/config.zig");
 const goods_mod = @import("../data/goods.zig");
 const Good = goods_mod.Good;
 
+/// Persistent UI state for the "add new threshold" input row (Story 2.7),
+/// stored on AppState exactly like SettingsState/settings_state.
+pub const ThresholdState = struct {
+    new_value: u32 = 0,
+    error_msg: ?[]const u8 = null,
+};
+
 /// Renders one placeholder label, centered, matching the "no data yet" style
 /// used elsewhere in this tab.
 fn placeholder(text: []const u8) void {
@@ -50,6 +57,42 @@ pub fn renderTab(app_state: *AppState) !void {
 
     const origin_goods = app_state.goods.?.get(origin) orelse &[_]goods_mod.Good{};
 
+    // ── New Threshold input row (Story 2.7) ────────────────────────────────────
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .margin = .{ .x = 16, .y = 4 },
+        });
+        defer row.deinit();
+
+        dvui.label(@src(), "New Threshold:", .{}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 110 },
+        });
+
+        _ = dvui.textEntryNumber(
+            @src(),
+            u32,
+            .{ .value = &app_state.threshold_state.new_value },
+            .{ .min_size_content = .{ .w = 70 } },
+        );
+
+        if (dvui.button(@src(), "Add", .{}, .{ .margin = .{ .x = 8 } })) {
+            const outcome = app_state.addThreshold(app_state.threshold_state.new_value);
+            if (outcome == .ok) {
+                app_state.threshold_state.new_value = 0;
+            }
+        }
+    }
+
+    if (app_state.threshold_state.error_msg) |msg| {
+        dvui.label(@src(), "Error: {s}", .{msg}, .{
+            .expand = .horizontal,
+            .margin = .{ .x = 16, .y = 2 },
+            .color_text = .{ .r = 200, .g = 50, .b = 50, .a = 255 },
+        });
+    }
+
     // ── Header row ───────────────────────────────────────────────────────────
     {
         var header = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -63,6 +106,7 @@ pub fn renderTab(app_state: *AppState) !void {
         dvui.label(@src(), "Transport", .{}, .{ .min_size_content = .{ .w = 100 } });
         dvui.label(@src(), "Destination", .{}, .{ .min_size_content = .{ .w = 100 } });
         dvui.label(@src(), "Ducats/min", .{}, .{ .min_size_content = .{ .w = 100 } });
+        dvui.label(@src(), "", .{}, .{ .min_size_content = .{ .w = 70 } });
     }
     _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 2 } });
 
@@ -88,6 +132,12 @@ pub fn renderTab(app_state: *AppState) !void {
                 .expand = .horizontal,
                 .id_extra = row_idx,
             });
+            if (dvui.button(@src(), "Remove", .{}, .{
+                .min_size_content = .{ .w = 70 },
+                .id_extra = row_idx,
+            })) {
+                app_state.removeThreshold(row_idx);
+            }
             continue;
         }
 
@@ -111,6 +161,13 @@ pub fn renderTab(app_state: *AppState) !void {
             .min_size_content = .{ .w = 100 },
             .id_extra = row_idx,
         });
+
+        if (dvui.button(@src(), "Remove", .{}, .{
+            .min_size_content = .{ .w = 70 },
+            .id_extra = row_idx,
+        })) {
+            app_state.removeThreshold(row_idx);
+        }
     }
 }
 
