@@ -46,6 +46,7 @@ pub const AppState = struct {
     active_tab: enum { threshold, live } = .threshold,
     origin_error: ?[]const u8 = null,
     threshold_state: threshold.ThresholdState = .{},
+    live_state: live.LiveState = .{},
 
     // ── Threshold engine cache (Story 2.4) ────────────────────────────────────
     // One slot per Outpost (index matches OUTPOST_KEYS/config.zig order).
@@ -366,7 +367,7 @@ pub const AppState = struct {
         // A threshold-add/remove error from the previous Origin is no longer
         // relevant once the Origin has changed.
         self.threshold_state.error_msg = null;
-        // TODO(Epic 3): clear live inputs here
+        live.clearProfits(&self.live_state);
     }
 
     /// Persist `self.routes` to routes.json if it differs from `before`, then
@@ -989,4 +990,35 @@ test "iconBytes: reads and caches a file with a stable pointer; missing file ret
     }
     const oversized = state.iconBytes(oversized_path);
     try std.testing.expect(oversized == null);
+}
+
+// ── handleOriginChange ──────────────────────────────────────────────────────
+
+test "handleOriginChange clears live_state.profits (Story 3.1)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.transports.backpack = true; // loadConfig requires >=1 transport; unused here but keeps cfg realistic
+    cfg.origin = try allocator.dupe(u8, "tirChonaill"); // handleOriginChange frees the old origin, so it must be heap-owned
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+
+    state.live_state.profits[0][0] = 42.0;
+    state.live_state.profits[5][3] = 7.5;
+    state.live_state.profits[63][11] = 1.0;
+
+    try state.handleOriginChange(1); // switch to "dunbarton"
+
+    for (state.live_state.profits) |row| {
+        for (row) |v| {
+            try std.testing.expectEqual(@as(f32, 0.0), v);
+        }
+    }
+
+    allocator.free(state.config.?.origin);
 }
