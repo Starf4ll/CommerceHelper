@@ -5,6 +5,7 @@ const goods_mod = @import("../data/goods.zig");
 const routes_mod = @import("../data/routes.zig");
 const config_mod = @import("../data/config.zig");
 const matrix_mod = @import("../engine/matrix.zig");
+const threshold_mod = @import("../engine/threshold.zig");
 const onboarding = @import("onboarding.zig");
 const settings = @import("settings.zig");
 const threshold = @import("threshold.zig");
@@ -44,6 +45,11 @@ pub const AppState = struct {
     settings_state: settings.SettingsState = .{},
     active_tab: enum { threshold, live } = .threshold,
     origin_error: ?[]const u8 = null,
+
+    // ── Threshold engine cache (Story 2.4) ────────────────────────────────────
+    // One slot per Outpost (index matches OUTPOST_KEYS/config.zig order).
+    threshold_cache: [12]?threshold_mod.OriginResult = [_]?threshold_mod.OriginResult{null} ** 12,
+    threshold_cache_stale: bool = true,
 
     pub fn init(allocator: std.mem.Allocator, exe_dir: []const u8) AppState {
         var state = AppState{
@@ -120,9 +126,28 @@ pub const AppState = struct {
 
     // ── Render ────────────────────────────────────────────────────────────────
 
+    /// Clears the per-Origin Threshold cache when stale, then lazily fills the
+    /// current Origin's slot on demand. Pure cache bookkeeping — no UI, no I/O
+    /// beyond the pure `sweepOrigin` call. Called as the first line of render().
+    ///
+    /// Staleness is set by settings.zig whenever a value-type Config field
+    /// changes (transports, either Modifier, any Merchant Rating, Speed Bonus,
+    /// or Gear Discount). Switching the viewed Origin alone does not set it —
+    /// that is a cache read, not an invalidation trigger.
+    pub fn update(self: *AppState) void {
+        threshold_mod.updateCache(
+            &self.threshold_cache,
+            &self.threshold_cache_stale,
+            self.config,
+            self.goods,
+            self.route_matrix,
+        );
+    }
+
     /// Called once per frame from main.zig inside win.begin/end.
     /// Returns an error only for unrecoverable dvui failures.
     pub fn render(self: *AppState) !void {
+        self.update();
         if (self.load_error != null) {
             try self.renderErrorDialog();
         } else if (self.needs_wizard) {

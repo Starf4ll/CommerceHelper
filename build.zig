@@ -92,4 +92,24 @@ pub fn build(b: *std.Build) void {
     const run_optimizer_tests = b.addRunArtifact(optimizer_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_optimizer_tests.step);
+
+    // `zig build test` — run threshold engine unit tests
+    const threshold_tests = b.addTest(.{
+        .root_source_file = b.path("src/engine/threshold.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // threshold.zig (and its sibling engine/matrix.zig, engine/optimizer.zig,
+    // pulled in via same-directory relative imports) escape the test root's
+    // module boundary (src/engine/) via "../data/*.zig" — register each exact
+    // import string, reusing the modules created above where possible.
+    threshold_tests.root_module.addImport("../data/config.zig", config_mod);
+    threshold_tests.root_module.addImport("../data/goods.zig", goods_mod);
+    const routes_mod = b.createModule(.{
+        .root_source_file = b.path("src/data/routes.zig"),
+        .imports = &.{.{ .name = "embedded_assets", .module = test_embedded_assets_mod }},
+    });
+    threshold_tests.root_module.addImport("../data/routes.zig", routes_mod);
+    const run_threshold_tests = b.addRunArtifact(threshold_tests);
+    test_step.dependOn(&run_threshold_tests.step);
 }
