@@ -232,6 +232,21 @@ pub fn renderTab(app_state: *AppState) !void {
     if (!any_visible) {
         placeholder("No Goods available at your Merchant Rating for this Origin");
     }
+
+    // Manual trigger (AD-5 Level 3) — engine/live.zig's calculate() never
+    // runs automatically; only this button invokes it. Story 3.3 renders
+    // app_state.live_results — no visible table here yet.
+    {
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .gravity_x = 0.5,
+            .margin = .{ .y = 12, .x = 16 },
+        });
+        defer hbox.deinit();
+
+        if (dvui.button(@src(), "Calculate", .{}, .{})) {
+            app_state.calculateLive();
+        }
+    }
 }
 
 // ── parseProfitInput tests ───────────────────────────────────────────────────

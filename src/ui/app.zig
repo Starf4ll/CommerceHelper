@@ -10,6 +10,7 @@ const onboarding = @import("onboarding.zig");
 const settings = @import("settings.zig");
 const threshold = @import("threshold.zig");
 const live = @import("live.zig");
+const live_engine = @import("../engine/live.zig");
 
 pub const GoodsMap = goods_mod.GoodsMap;
 pub const RouteData = routes_mod.RouteData;
@@ -47,6 +48,12 @@ pub const AppState = struct {
     origin_error: ?[]const u8 = null,
     threshold_state: threshold.ThresholdState = .{},
     live_state: live.LiveState = .{},
+    // `null` means "never calculated yet" or "cleared by an Origin/Config
+    // change" (see handleOriginChange/update). `Some(LiveResults)` with
+    // `count == 0` means Calculate was pressed but found no profitable
+    // combination — a distinct state from "not calculated" that Story 3.3's
+    // results rendering must tell apart.
+    live_results: ?live_engine.LiveResults = null,
 
     // ── Threshold engine cache (Story 2.4) ────────────────────────────────────
     // One slot per Outpost (index matches OUTPOST_KEYS/config.zig order).
@@ -149,6 +156,10 @@ pub const AppState = struct {
     /// or Gear Discount). Switching the viewed Origin alone does not set it —
     /// that is a cache read, not an invalidation trigger.
     pub fn update(self: *AppState) void {
+        // Read staleness before updateCache clears it — "Config changed" is
+        // exactly this existing signal (settings.zig:445-446), and it must
+        // also invalidate any Live Mode results computed under the old Config.
+        const was_stale = self.threshold_cache_stale;
         threshold_mod.updateCache(
             &self.threshold_cache,
             &self.threshold_cache_stale,
@@ -156,6 +167,9 @@ pub const AppState = struct {
             self.goods,
             self.route_matrix,
         );
+        if (was_stale) {
+            self.live_results = null;
+        }
     }
 
     /// Returns the bytes of the icon file at `exe_dir/image_path`, reading
@@ -368,6 +382,40 @@ pub const AppState = struct {
         // relevant once the Origin has changed.
         self.threshold_state.error_msg = null;
         live.clearProfits(&self.live_state);
+        self.live_results = null;
+    }
+
+    /// Runs the Live Mode calculation sweep (engine/live.zig's `calculate`)
+    /// over the current Origin's Goods, Config, route matrix, and entered
+    /// profits, storing the result into `live_results`. The only entry point
+    /// into the Live engine — never auto-called from `update()`, only from
+    /// the Calculate button in ui/live.zig (manual trigger, AD-5 Level 3).
+    /// No-ops (leaves `live_results` untouched) if the app isn't fully
+    /// loaded yet or no Origin is selected.
+    pub fn calculateLive(self: *AppState) void {
+        const cfg = self.config orelse return;
+        if (cfg.origin.len == 0) return;
+
+        var origin_idx: ?usize = null;
+        for (config_mod.OUTPOST_KEYS, 0..) |key, i| {
+            if (std.mem.eql(u8, cfg.origin, key)) {
+                origin_idx = i;
+                break;
+            }
+        }
+        const idx = origin_idx orelse return;
+
+        const gm = self.goods orelse return;
+        const rm = self.route_matrix orelse return;
+        const origin_goods: []const goods_mod.Good = gm.get(cfg.origin) orelse &[_]goods_mod.Good{};
+
+        self.live_results = live_engine.calculate(
+            origin_goods,
+            cfg,
+            idx,
+            rm,
+            self.live_state.profits[0..],
+        );
     }
 
     /// Persist `self.routes` to routes.json if it differs from `before`, then
@@ -1021,4 +1069,152 @@ test "handleOriginChange clears live_state.profits (Story 3.1)" {
     }
 
     allocator.free(state.config.?.origin);
+}
+
+// ── live_results clearing (Story 3.2 Matrix Test Audit: I/O row 4) ──────────
+
+test "handleOriginChange clears live_results (Story 3.2)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.transports.backpack = true;
+    cfg.origin = try allocator.dupe(u8, "tirChonaill");
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+    state.live_results = live_engine.LiveResults{ .rows = undefined, .count = 3 };
+
+    try state.handleOriginChange(1); // switch to "dunbarton"
+
+    try std.testing.expect(state.live_results == null);
+
+    allocator.free(state.config.?.origin);
+}
+
+test "update() clears live_results when threshold_cache_stale was true (Story 3.2)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.origin = try allocator.dupe(u8, "tirChonaill");
+    defer allocator.free(cfg.origin);
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+    state.threshold_cache_stale = true;
+    state.live_results = live_engine.LiveResults{ .rows = undefined, .count = 3 };
+
+    state.update();
+
+    try std.testing.expect(state.live_results == null);
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+test "update() leaves live_results untouched when threshold_cache_stale is false (Story 3.2)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.origin = try allocator.dupe(u8, "tirChonaill");
+    defer allocator.free(cfg.origin);
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+    state.threshold_cache_stale = false;
+    state.live_results = live_engine.LiveResults{ .rows = undefined, .count = 3 };
+
+    state.update();
+
+    try std.testing.expect(state.live_results != null);
+    try std.testing.expectEqual(@as(u8, 3), state.live_results.?.count);
+}
+
+// ── calculateLive() success path (Story 3.2 Matrix Test Audit) ─────────────
+// Unlike the live_results tests above (which hand-construct live_results and
+// only check clearing/null behavior), this drives AppState's actual entry
+// point into the Live engine — mirroring engine/live.zig's own
+// "calculate happy path" test, but going through calculateLive() end to end:
+// a real GoodsMap, a real RouteMatrix with one reachable Destination, a
+// Config with a valid Origin and an owned Transport, and a nonzero entered
+// profit.
+
+test "calculateLive happy path: populates live_results via the real AppState entry point" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.transports.backpack = true; // owned Transport
+    cfg.origin = try allocator.dupe(u8, "tirChonaill"); // valid Origin (OUTPOST_KEYS[0])
+    defer allocator.free(cfg.origin);
+
+    // GoodsMap with one Good at the Origin. Static string fields (no
+    // allocation) mirror engine/live.zig's own makeGood test helper — the
+    // map's only heap allocation is its internal bucket storage, freed below
+    // via gm.deinit() (not deinitGoodsMap, which would wrongly try to free
+    // these static strings).
+    var good_slice = [_]goods_mod.Good{
+        .{
+            .name = "TestGood",
+            .description = "",
+            .image = "",
+            .weight = 10,
+            .quantityPerSlot = 5,
+            .cost = 0,
+            .merchantRating = 1,
+        },
+    };
+    var gm = GoodsMap.init(allocator);
+    defer gm.deinit();
+    try gm.put("tirChonaill", good_slice[0..]);
+
+    // RouteMatrix: only tirChonaill(0)<->dunbarton(1) is reachable.
+    var matrix = std.mem.zeroes(RouteMatrix);
+    matrix.baseTimes[0][1] = 100;
+    matrix.baseTimes[1][0] = 100;
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = null,
+        .route_matrix = matrix,
+        .goods = gm,
+        .config = cfg,
+        .needs_wizard = false,
+        .load_error = null,
+        .threshold_cache_stale = false,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
+    };
+
+    state.live_state.profits[0][1] = 50.0; // TestGood @ dunbarton: 50 Ducats/unit
+
+    state.calculateLive();
+
+    try std.testing.expect(state.live_results != null);
+    const results = state.live_results.?;
+    try std.testing.expectEqual(@as(u8, 1), results.count);
+
+    const row = results.rows[0];
+    try std.testing.expectEqual(@as(usize, 1), row.destination_idx);
+    try std.testing.expect(std.mem.eql(u8, "Backpack", row.transport_name));
+    try std.testing.expectEqual(@as(u8, 1), row.load.count);
+    try std.testing.expectEqual(@as(usize, 0), row.load.items[0].good_idx);
+    // primaryQty(weight=10, qty=5, backpack cap=400 slots=4, mods=0) = min(40, 20) = 20
+    try std.testing.expectEqual(@as(u32, 20), row.load.items[0].qty);
+    try std.testing.expectApproxEqAbs(@as(f64, 1000.0), row.total_profit, 0.001);
+    // travel = 100 / 0.91 = 109.8901s => 1.831502 min; ducats/min = 1000 / 1.831502 = 546.0
+    try std.testing.expectApproxEqAbs(@as(f64, 546.0), row.ducats_per_min, 0.1);
 }
