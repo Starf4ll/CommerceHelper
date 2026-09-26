@@ -112,4 +112,56 @@ pub fn build(b: *std.Build) void {
     threshold_tests.root_module.addImport("../data/routes.zig", routes_mod);
     const run_threshold_tests = b.addRunArtifact(threshold_tests);
     test_step.dependOn(&run_threshold_tests.step);
+
+    // `zig build test` — run routes data-layer unit tests
+    const routes_tests = b.addTest(.{
+        .root_source_file = b.path("src/data/routes.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // routes.zig imports "embedded_assets" directly; register the same
+    // test-side embedded_assets module used above.
+    routes_tests.root_module.addImport("embedded_assets", test_embedded_assets_mod);
+    const run_routes_tests = b.addRunArtifact(routes_tests);
+    test_step.dependOn(&run_routes_tests.step);
+
+    // `zig build test` — run AppState orchestration unit tests (Story 2.5:
+    // AppState.saveRoutes success/no-op/failure paths).
+    const app_tests = b.addTest(.{
+        .root_source_file = b.path("src/ui/app.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // app.zig (and its sibling ui/onboarding.zig, ui/settings.zig,
+    // ui/threshold.zig, ui/live.zig — pulled in via same-directory relative
+    // imports, so no registration needed for those) escapes the test root's
+    // module boundary (src/ui/) via "dvui" and "../data|engine/*.zig" —
+    // register each exact import string, reusing the modules created above.
+    app_tests.root_module.addImport("dvui", dvui_dx11_mod);
+    app_tests.root_module.addImport("../data/config.zig", config_mod);
+    app_tests.root_module.addImport("../data/goods.zig", goods_mod);
+    app_tests.root_module.addImport("../data/routes.zig", routes_mod);
+    // engine/matrix.zig is reached two ways here: directly by app.zig
+    // ("../engine/matrix.zig") and internally by engine/threshold.zig's own
+    // sibling import ("matrix.zig"). Build ONE module for it and override
+    // threshold's sibling-import name to point at that same instance, so
+    // RouteMatrix is one identical type on both sides of build()/updateCache()
+    // — two separate modules for the same file would produce two distinct
+    // (incompatible) RouteMatrix types.
+    const engine_matrix_mod = b.createModule(.{
+        .root_source_file = b.path("src/engine/matrix.zig"),
+        .imports = &.{.{ .name = "../data/routes.zig", .module = routes_mod }},
+    });
+    const engine_threshold_mod = b.createModule(.{
+        .root_source_file = b.path("src/engine/threshold.zig"),
+        .imports = &.{
+            .{ .name = "../data/config.zig", .module = config_mod },
+            .{ .name = "../data/goods.zig", .module = goods_mod },
+            .{ .name = "matrix.zig", .module = engine_matrix_mod },
+        },
+    });
+    app_tests.root_module.addImport("../engine/matrix.zig", engine_matrix_mod);
+    app_tests.root_module.addImport("../engine/threshold.zig", engine_threshold_mod);
+    const run_app_tests = b.addRunArtifact(app_tests);
+    test_step.dependOn(&run_app_tests.step);
 }

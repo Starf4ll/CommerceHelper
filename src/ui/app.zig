@@ -329,4 +329,146 @@ pub const AppState = struct {
         self.origin_error = null;
         // TODO(Epic 3): clear live inputs here
     }
+
+    /// Persist `self.routes` to routes.json if it differs from `before`, then
+    /// rebuild the route matrix and invalidate the threshold cache.
+    /// No-ops (no write, no rebuild) if nothing changed this frame.
+    /// Keeps the engine rebuild (matrix_mod.build) out of ui/settings.zig
+    /// (AD-2/AD-4) — settings.zig only ever calls this method.
+    pub fn saveRoutes(self: *AppState, before: RouteData) void {
+        if (std.meta.eql(before, self.routes.?)) return;
+
+        routes_mod.writeRoutes(self.routes.?, self.allocator, self.exe_dir) catch |err| {
+            self.settings_state.write_error = @errorName(err);
+            self.routes.? = before;
+            return;
+        };
+
+        self.route_matrix = matrix_mod.build(self.routes.?);
+        self.threshold_cache_stale = true;
+        self.settings_state.write_error = null;
+    }
 };
+
+// ── saveRoutes tests (Story 2.5) ─────────────────────────────────────────────
+// Directly construct a minimal AppState — no AppState.init / real dvui window
+// needed, since saveRoutes touches only allocator, exe_dir, routes,
+// route_matrix, settings_state.write_error and threshold_cache_stale.
+
+test "saveRoutes success: writes to disk, rebuilds route_matrix, marks threshold cache stale" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    const before = std.mem.zeroes(RouteData);
+    var after = before;
+    after.tirChonaill.dunbarton = 999;
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = after,
+        .route_matrix = null,
+        .goods = null,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .threshold_cache_stale = false,
+    };
+
+    state.saveRoutes(before);
+
+    // routes.json round-trips the new value.
+    const loaded = try routes_mod.loadRoutes(allocator, exe_dir);
+    try std.testing.expect(std.meta.eql(loaded, after));
+
+    // route_matrix rebuilt from the new data.
+    try std.testing.expect(std.meta.eql(state.route_matrix.?, matrix_mod.build(after)));
+
+    // Threshold cache fully invalidated; no error surfaced.
+    try std.testing.expect(state.threshold_cache_stale == true);
+    try std.testing.expect(state.settings_state.write_error == null);
+}
+
+test "saveRoutes no-op: unchanged RouteData triggers no write and no rebuild" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    const routes = std.mem.zeroes(RouteData);
+    const sentinel_matrix = matrix_mod.build(routes);
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = routes,
+        .route_matrix = sentinel_matrix,
+        .goods = null,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .threshold_cache_stale = false,
+    };
+
+    state.saveRoutes(routes); // before == current: nothing changed this frame
+
+    // No routes.json was ever written.
+    if (tmp.dir.access("routes.json", .{})) {
+        try std.testing.expect(false); // no-op must not have written the file
+    } else |err| {
+        try std.testing.expect(err == error.FileNotFound);
+    }
+
+    // route_matrix and threshold_cache_stale left untouched.
+    try std.testing.expect(std.meta.eql(state.route_matrix.?, sentinel_matrix));
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+test "saveRoutes failure: write error reverts routes and sets write_error, leaves matrix/cache untouched" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_root);
+    // A subdirectory that is never created — writeFile's parent-directory
+    // lookup fails, forcing writeRoutes to return an error.
+    const exe_dir = try std.fs.path.join(allocator, &.{ tmp_root, "does_not_exist" });
+    defer allocator.free(exe_dir);
+
+    const before = std.mem.zeroes(RouteData);
+    var after = before;
+    after.qilla.vales = 42;
+
+    const sentinel_matrix = matrix_mod.build(before);
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = after,
+        .route_matrix = sentinel_matrix,
+        .goods = null,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .threshold_cache_stale = false,
+    };
+
+    state.saveRoutes(before);
+
+    // Reverted to the pre-edit snapshot.
+    try std.testing.expect(std.meta.eql(state.routes.?, before));
+
+    // Error surfaced via SettingsState.write_error.
+    try std.testing.expect(state.settings_state.write_error != null);
+
+    // route_matrix and threshold_cache_stale left untouched.
+    try std.testing.expect(std.meta.eql(state.route_matrix.?, sentinel_matrix));
+    try std.testing.expect(state.threshold_cache_stale == false);
+}
