@@ -51,6 +51,12 @@ pub const AppState = struct {
     threshold_cache: [12]?threshold_mod.OriginResult = [_]?threshold_mod.OriginResult{null} ** 12,
     threshold_cache_stale: bool = true,
 
+    // ── Icon byte cache (Story 2.6) ────────────────────────────────────────────
+    // Keyed by Good.image path (a stable slice owned by `goods`, live for the
+    // lifetime of AppState). Values are allocator-owned file bytes, read from
+    // disk at most once per path — see iconBytes()/Design Notes for why.
+    icon_cache: std.StringHashMap([]const u8),
+
     pub fn init(allocator: std.mem.Allocator, exe_dir: []const u8) AppState {
         var state = AppState{
             .allocator = allocator,
@@ -61,6 +67,7 @@ pub const AppState = struct {
             .config = null,
             .needs_wizard = false,
             .load_error = null,
+            .icon_cache = std.StringHashMap([]const u8).init(allocator),
         };
         state.runStartupSequence();
         return state;
@@ -76,6 +83,11 @@ pub const AppState = struct {
         if (self.load_error) |err| {
             self.allocator.free(err.message);
         }
+        var icon_it = self.icon_cache.valueIterator();
+        while (icon_it.next()) |bytes| {
+            self.allocator.free(bytes.*);
+        }
+        self.icon_cache.deinit();
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -142,6 +154,29 @@ pub const AppState = struct {
             self.goods,
             self.route_matrix,
         );
+    }
+
+    /// Returns the bytes of the icon file at `exe_dir/image_path`, reading
+    /// from disk at most once per path and caching the result with a stable
+    /// pointer. Returns null (never crashes) if the file can't be read — the
+    /// caller falls back to name-only rendering.
+    ///
+    /// The cache exists because dvui's `ImageSource.imageFile` defaults to
+    /// `invalidation = .ptr`: it keys its texture cache off `bytes.ptr`, so
+    /// re-reading the file fresh every frame would hand it a new pointer each
+    /// time and force a GPU texture rebuild every frame.
+    pub fn iconBytes(self: *AppState, image_path: []const u8) ?[]const u8 {
+        if (self.icon_cache.get(image_path)) |cached| return cached;
+
+        const path = std.fs.path.join(self.allocator, &.{ self.exe_dir, image_path }) catch return null;
+        defer self.allocator.free(path);
+
+        const bytes = std.fs.cwd().readFileAlloc(self.allocator, path, goods_mod.max_file_size) catch return null;
+        self.icon_cache.put(image_path, bytes) catch {
+            self.allocator.free(bytes);
+            return null;
+        };
+        return bytes;
     }
 
     /// Called once per frame from main.zig inside win.begin/end.
@@ -377,6 +412,7 @@ test "saveRoutes success: writes to disk, rebuilds route_matrix, marks threshold
         .needs_wizard = false,
         .load_error = null,
         .threshold_cache_stale = false,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
     };
 
     state.saveRoutes(before);
@@ -414,6 +450,7 @@ test "saveRoutes no-op: unchanged RouteData triggers no write and no rebuild" {
         .needs_wizard = false,
         .load_error = null,
         .threshold_cache_stale = false,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
     };
 
     state.saveRoutes(routes); // before == current: nothing changed this frame
@@ -458,6 +495,7 @@ test "saveRoutes failure: write error reverts routes and sets write_error, leave
         .needs_wizard = false,
         .load_error = null,
         .threshold_cache_stale = false,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
     };
 
     state.saveRoutes(before);
@@ -471,4 +509,59 @@ test "saveRoutes failure: write error reverts routes and sets write_error, leave
     // route_matrix and threshold_cache_stale left untouched.
     try std.testing.expect(std.meta.eql(state.route_matrix.?, sentinel_matrix));
     try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+// ── iconBytes ────────────────────────────────────────────────────────────────
+
+test "iconBytes: reads and caches a file with a stable pointer; missing file returns null" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    try tmp.dir.makePath("static/img/good");
+    try tmp.dir.writeFile(.{ .sub_path = "static/img/good/test.png", .data = "fake-icon-bytes" });
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = null,
+        .route_matrix = null,
+        .goods = null,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
+    };
+    // goods/config/routes/load_error are all null here, so deinit() is safe
+    // to call directly — this also exercises AppState.deinit()'s icon-cache
+    // free loop, which no other test in this file reaches.
+    defer state.deinit();
+
+    const first = state.iconBytes("static/img/good/test.png").?;
+    try std.testing.expectEqualStrings("fake-icon-bytes", first);
+
+    // Second call must hit the cache and return the exact same pointer —
+    // dvui's texture cache keys off bytes.ptr (ImageSource default .ptr
+    // invalidation), so a changed pointer would thrash it every frame.
+    const second = state.iconBytes("static/img/good/test.png").?;
+    try std.testing.expect(first.ptr == second.ptr);
+
+    // Missing file: falls back to null, never crashes.
+    const missing = state.iconBytes("static/img/good/does_not_exist.png");
+    try std.testing.expect(missing == null);
+
+    // Oversized file (> goods_mod.max_file_size): readFileAlloc's size limit
+    // triggers an error, same null-fallback contract as the missing-file case.
+    const oversized_path = "static/img/good/oversized.png";
+    {
+        const oversized_data = try allocator.alloc(u8, goods_mod.max_file_size + 1);
+        defer allocator.free(oversized_data);
+        @memset(oversized_data, 'x');
+        try tmp.dir.writeFile(.{ .sub_path = oversized_path, .data = oversized_data });
+    }
+    const oversized = state.iconBytes(oversized_path);
+    try std.testing.expect(oversized == null);
 }
