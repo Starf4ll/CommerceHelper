@@ -7,6 +7,7 @@ const AppState = app_mod.AppState;
 const config_mod = @import("../data/config.zig");
 const goods_mod = @import("../data/goods.zig");
 const Good = goods_mod.Good;
+const engine_live = @import("../engine/live.zig");
 
 /// Maximum number of distinct Goods supported per Origin — mirrors
 /// `engine/threshold.zig`'s own MAX_GOODS. No shared header exists between
@@ -147,6 +148,126 @@ fn goodHeader(good: Good, id_extra: usize, app_state: *AppState) void {
     );
 }
 
+/// Renders a Good's icon (if readable) + name, with its description as a
+/// hover tooltip (AD-8). Icon read failure falls back to name-only, never
+/// crashes — iconBytes() returns null on any read error.
+///
+/// Mirrors `threshold.zig`'s module-private `goodCell` exactly (same
+/// icon/label/tooltip mechanics) — that helper isn't exported, so a result
+/// row's Good cells (primary, and each load-composition item) need this local
+/// copy rather than reaching across files.
+fn goodCell(good: Good, id_extra: usize, app_state: *AppState) void {
+    var wd: dvui.WidgetData = undefined;
+    var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 170 },
+        .id_extra = id_extra,
+        .data_out = &wd,
+    });
+    defer cell.deinit();
+
+    if (app_state.iconBytes(good.image)) |bytes| {
+        _ = dvui.image(@src(), .{
+            .source = .{ .imageFile = .{ .bytes = bytes, .name = good.image } },
+        }, .{
+            .min_size_content = .{ .w = 20, .h = 20 },
+            .gravity_y = 0.5,
+            .margin = .{ .x = 4 },
+            .id_extra = id_extra,
+        });
+    }
+
+    dvui.label(@src(), "{s}", .{good.name}, .{
+        .gravity_y = 0.5,
+        .id_extra = id_extra,
+    });
+
+    dvui.tooltip(
+        @src(),
+        .{ .active_rect = wd.borderRectScale().r },
+        "{s}",
+        .{good.description},
+        .{ .id_extra = id_extra },
+    );
+}
+
+/// Renders a result row's full load composition — every entry in
+/// `load.items[0..load.count]` as an icon+name+qty cell (each item still
+/// individually hoverable for its own description via `goodCell`) — plus one
+/// combined tooltip on the whole cell listing every item's name and quantity,
+/// so the full load is readable at a glance without hovering each icon.
+///
+/// `id_extra` for each item uses the `row_idx * 100 + item_idx` composite
+/// (not just `item_idx`): unlike Threshold's one-Good-per-row table, a single
+/// row here renders multiple Good cells from the same loop call site, so
+/// `item_idx` alone would collide across rows.
+fn loadCompositionCell(load: engine_live.LoadComposition, origin_goods: []const Good, row_idx: usize, app_state: *AppState) void {
+    std.debug.assert(load.count <= engine_live.MAX_LOAD_ITEMS);
+
+    var wd: dvui.WidgetData = undefined;
+    var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .gravity_y = 0.5,
+        .min_size_content = .{ .w = 220 },
+        .id_extra = row_idx,
+        .data_out = &wd,
+    });
+    defer cell.deinit();
+
+    // Combined breakdown tooltip on the whole cell — built into a stack
+    // buffer since dvui.tooltip's fmt string must be comptime-known and the
+    // item count is dynamic; a single "{s}" arg carries the pre-formatted
+    // multi-line text. Truncates (never crashes) if an absurd number of
+    // long Good names overflow the buffer — cosmetic only, load.count is
+    // capped at MAX_LOAD_ITEMS (16).
+    var buf: [1024]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const writer = stream.writer();
+
+    for (load.items[0..load.count], 0..) |item, item_idx| {
+        const good = origin_goods[item.good_idx];
+
+        goodCell(good, row_idx * 100 + item_idx, app_state);
+        dvui.label(@src(), "x{d}", .{item.qty}, .{
+            .gravity_y = 0.5,
+            .margin = .{ .x = 2 },
+            .id_extra = row_idx * 100 + item_idx,
+        });
+
+        if (item_idx != 0) writer.writeAll("\n") catch {};
+        writer.print("{s} x{d}", .{ good.name, item.qty }) catch {};
+    }
+
+    dvui.tooltip(
+        @src(),
+        .{ .active_rect = wd.borderRectScale().r },
+        "{s}",
+        .{stream.getWritten()},
+        .{ .id_extra = row_idx },
+    );
+}
+
+/// Selects the placeholder message for the two non-table `live_results`
+/// states (app.zig:51-55's null-vs-zero-count distinction). Returns null when
+/// there are rows to render, telling the caller to render the table instead.
+/// Pure/dvui-free so it's directly unit-testable, unlike the render code
+/// around it.
+fn resultsMessage(live_results: ?engine_live.LiveResults) ?[]const u8 {
+    const results = live_results orelse return "Enter prices and press Calculate";
+    if (results.count == 0) return "No profitable combinations found";
+    return null;
+}
+
+/// Derives a result row's Travel Time in minutes from its stored
+/// `total_profit`/`ducats_per_min` — `LiveResult` never stores travel time or
+/// rank directly (see engine/live.zig and this feature's Boundaries). Safe
+/// against division by zero: `calculate()` only inserts rows with
+/// `ducats_per_min > 0` (travel_seconds > 0 and total_profit > 0 are both
+/// required for a row to exist).
+fn travelMinutes(total_profit: f64, ducats_per_min: f64) f64 {
+    std.debug.assert(ducats_per_min > 0);
+    return total_profit / ducats_per_min;
+}
+
 pub fn renderTab(app_state: *AppState) !void {
     var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
     defer scroll.deinit();
@@ -234,8 +355,7 @@ pub fn renderTab(app_state: *AppState) !void {
     }
 
     // Manual trigger (AD-5 Level 3) — engine/live.zig's calculate() never
-    // runs automatically; only this button invokes it. Story 3.3 renders
-    // app_state.live_results — no visible table here yet.
+    // runs automatically; only this button invokes it.
     {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .gravity_x = 0.5,
@@ -246,6 +366,90 @@ pub fn renderTab(app_state: *AppState) !void {
         if (dvui.button(@src(), "Calculate", .{}, .{})) {
             app_state.calculateLive();
         }
+    }
+
+    // ── Results table (Story 3.3) ───────────────────────────────────────────
+    // Reads app_state.live_results only — never triggers recalculation. Null
+    // (never calculated) and count==0 (calculated, no profitable combos) are
+    // distinct states per app.zig:51-55; resultsMessage tells them apart.
+    if (resultsMessage(app_state.live_results)) |msg| {
+        placeholder(msg);
+        return;
+    }
+    const results = app_state.live_results.?;
+    std.debug.assert(results.count <= engine_live.MAX_LIVE_RESULTS);
+
+    // ── Header row ───────────────────────────────────────────────────────────
+    {
+        var header = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .margin = .{ .x = 16, .y = 4 },
+        });
+        defer header.deinit();
+
+        dvui.label(@src(), "Rank", .{}, .{ .min_size_content = .{ .w = 40 } });
+        dvui.label(@src(), "Good", .{}, .{ .min_size_content = .{ .w = 170 } });
+        dvui.label(@src(), "Transport", .{}, .{ .min_size_content = .{ .w = 100 } });
+        dvui.label(@src(), "Destination", .{}, .{ .min_size_content = .{ .w = 100 } });
+        dvui.label(@src(), "Load", .{}, .{ .min_size_content = .{ .w = 220 } });
+        dvui.label(@src(), "Total Profit", .{}, .{ .min_size_content = .{ .w = 100 } });
+        dvui.label(@src(), "Travel Time", .{}, .{ .min_size_content = .{ .w = 100 } });
+        dvui.label(@src(), "Ducats/min", .{}, .{ .min_size_content = .{ .w = 100 } });
+    }
+    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 2 } });
+
+    // ── Rows: top results.count (<=10), already sorted descending by
+    // Ducats/min by engine/live.zig's insertResult — no re-sorting here.
+    for (results.rows[0..results.count], 0..) |row, row_idx| {
+        var hrow = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .margin = .{ .x = 16, .y = 2 },
+            .id_extra = row_idx,
+        });
+        defer hrow.deinit();
+
+        dvui.label(@src(), "{d}", .{row_idx + 1}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 40 },
+            .id_extra = row_idx,
+        });
+
+        // Primary Good is load.items[0] (Boundaries) — resolved via the
+        // current Origin's Goods slice, the same one calculateLive() swept.
+        const primary_good = origin_goods[row.load.items[0].good_idx];
+        goodCell(primary_good, row_idx, app_state);
+
+        dvui.label(@src(), "{s}", .{row.transport_name}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 100 },
+            .id_extra = row_idx,
+        });
+
+        dvui.label(@src(), "{s}", .{config_mod.OUTPOST_DISPLAY_NAMES[row.destination_idx]}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 100 },
+            .id_extra = row_idx,
+        });
+
+        loadCompositionCell(row.load, origin_goods, row_idx, app_state);
+
+        dvui.label(@src(), "{d:.2}", .{row.total_profit}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 100 },
+            .id_extra = row_idx,
+        });
+
+        dvui.label(@src(), "{d:.1}", .{travelMinutes(row.total_profit, row.ducats_per_min)}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 100 },
+            .id_extra = row_idx,
+        });
+
+        dvui.label(@src(), "{d:.1}", .{row.ducats_per_min}, .{
+            .gravity_y = 0.5,
+            .min_size_content = .{ .w = 100 },
+            .id_extra = row_idx,
+        });
     }
 }
 
@@ -291,4 +495,40 @@ test "LiveState defaults to all-zero profits" {
             try std.testing.expectEqual(@as(f32, 0.0), v);
         }
     }
+}
+
+// ── resultsMessage tests (Story 3.3) ────────────────────────────────────────
+// The render code around resultsMessage requires a live dvui window (see
+// Verification's manual-check note), but the null-vs-zero-count decision
+// itself is pure and fully covered here.
+
+test "resultsMessage: null live_results (never calculated) prompts to calculate" {
+    try std.testing.expectEqualStrings(
+        "Enter prices and press Calculate",
+        resultsMessage(null).?,
+    );
+}
+
+test "resultsMessage: calculated with zero results shows a distinct no-combinations message" {
+    const results = engine_live.LiveResults{ .rows = undefined, .count = 0 };
+    try std.testing.expectEqualStrings(
+        "No profitable combinations found",
+        resultsMessage(results).?,
+    );
+}
+
+test "resultsMessage: nonzero count returns null so the caller renders the table" {
+    const results = engine_live.LiveResults{ .rows = undefined, .count = 3 };
+    try std.testing.expect(resultsMessage(results) == null);
+}
+
+// ── travelMinutes tests (Story 3.3) ─────────────────────────────────────────
+
+test "travelMinutes: derives minutes from total_profit/ducats_per_min" {
+    // 500 total profit at 100 Ducats/min implies 5 minutes of travel.
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), travelMinutes(500.0, 100.0), 0.0001);
+}
+
+test "travelMinutes: fractional result is not rounded" {
+    try std.testing.expectApproxEqAbs(@as(f64, 1.6667), travelMinutes(200.0, 120.0), 0.001);
 }
