@@ -4,6 +4,7 @@ const dvui = @import("dvui");
 const goods_mod = @import("../data/goods.zig");
 const routes_mod = @import("../data/routes.zig");
 const config_mod = @import("../data/config.zig");
+const live_profits_mod = @import("../data/live_profits.zig");
 const matrix_mod = @import("../engine/matrix.zig");
 const threshold_mod = @import("../engine/threshold.zig");
 const onboarding = @import("onboarding.zig");
@@ -117,6 +118,17 @@ pub const AppState = struct {
         } else |err| {
             self.setLoadError(.goods, "goods.json", err);
             return;
+        }
+
+        // 2.5. Load live_profits.json — optional; needs GoodsMap (just loaded
+        // above) for name->index resolution. Fail-soft (missing/corrupt file
+        // = empty result, no wizard/error-dialog impact) is entirely handled
+        // inside loadLiveProfits itself. Any entry naming an Origin,
+        // Destination or Good no longer present is dropped silently.
+        {
+            const entries = live_profits_mod.loadLiveProfits(self.allocator, self.exe_dir);
+            defer live_profits_mod.deinitLiveProfitEntries(entries, self.allocator);
+            applyLiveProfitEntries(&self.live_state.profits, &self.goods.?, entries);
         }
 
         // 3. Load config.json — optional; null => show wizard placeholder.
@@ -381,8 +393,15 @@ pub const AppState = struct {
         // A threshold-add/remove error from the previous Origin is no longer
         // relevant once the Origin has changed.
         self.threshold_state.error_msg = null;
-        live.clearProfits(&self.live_state);
+        // Profit inputs are no longer Origin-specific-and-cleared (Story 3.4):
+        // switching Origin only changes which profits[origin_idx] slice the
+        // grid reads/writes. live_results still clears — it was computed
+        // under the old Origin's sweep and no longer applies.
         self.live_results = null;
+        // A save-write failure from the previous Origin is no longer relevant
+        // once the Origin has changed (same reasoning as threshold_state's
+        // error_msg reset above; review finding — this reset was missing).
+        self.live_state.write_error = null;
     }
 
     /// Runs the Live Mode calculation sweep (engine/live.zig's `calculate`)
@@ -414,7 +433,7 @@ pub const AppState = struct {
             cfg,
             idx,
             rm,
-            self.live_state.profits[0..],
+            self.live_state.profits[idx][0..],
         );
     }
 
@@ -435,6 +454,69 @@ pub const AppState = struct {
         self.route_matrix = matrix_mod.build(self.routes.?);
         self.threshold_cache_stale = true;
         self.settings_state.write_error = null;
+    }
+
+    /// Persist `self.live_state.profits[idx]` to live_profits.json if it
+    /// differs from `before`, following `saveRoutes`'s exact convention:
+    /// diff-before-write (no-op if nothing changed this frame), and on write
+    /// failure revert just this Origin's slice and set `LiveState.write_error`.
+    /// Rebuilds the whole file from every Origin's current in-memory profits
+    /// (not just this Origin) since live_profits.json holds all 12 Origins in
+    /// one flat, name-keyed list (Design Notes).
+    pub fn saveLiveProfits(self: *AppState, idx: usize, before: [live.MAX_GOODS][12]f32) void {
+        if (std.meta.eql(before, self.live_state.profits[idx])) return;
+
+        self.writeAllLiveProfits() catch |err| {
+            self.live_state.write_error = @errorName(err);
+            self.live_state.profits[idx] = before;
+            return;
+        };
+        self.live_state.write_error = null;
+    }
+
+    /// Walks all 12 Origins x each Origin's real GoodsMap slice x 12
+    /// Destinations, emitting one entry per nonzero cell, and writes the
+    /// resulting list to live_profits.json. Blank fields (profit == 0.0) are
+    /// never written (Boundaries). Origin/Good/Destination strings referenced
+    /// here are owned by OUTPOST_KEYS/GoodsMap (both outlive this call), so no
+    /// duplication/freeing is needed for the entries themselves.
+    ///
+    /// `LiveState.profits` stays `f32` in memory (the input grid parses
+    /// decimal text and the calculation engine works in floating point), but
+    /// real Ducats-per-unit values are always whole numbers well under a
+    /// 16-bit range, so each cell is rounded and saturated into
+    /// `LiveProfitEntry.profit`'s `u16` here — this is also what keeps the
+    /// JSON file itself a plain integer instead of scientific notation.
+    fn writeAllLiveProfits(self: *AppState) !void {
+        var entries = std.ArrayList(live_profits_mod.LiveProfitEntry).init(self.allocator);
+        defer entries.deinit();
+
+        for (config_mod.OUTPOST_KEYS, 0..) |origin_key, o_idx| {
+            const origin_goods = self.goods.?.get(origin_key) orelse continue;
+            for (origin_goods, 0..) |good, g_idx| {
+                // Same MAX_GOODS bound applyLiveProfitEntries enforces on the
+                // load side (Story 3.4 review) — profits[o_idx] is only
+                // MAX_GOODS wide, so a GoodsMap slice beyond that would
+                // otherwise index out of bounds here.
+                if (g_idx >= live.MAX_GOODS) break;
+                for (config_mod.OUTPOST_KEYS, 0..) |dest_key, d_idx| {
+                    if (d_idx == o_idx) continue;
+                    const profit = self.live_state.profits[o_idx][g_idx][d_idx];
+                    if (profit <= 0.0) continue;
+                    const rounded = @min(@round(profit), @as(f32, std.math.maxInt(u16)));
+                    const profit_u16: u16 = @intFromFloat(rounded);
+                    if (profit_u16 == 0) continue;
+                    try entries.append(.{
+                        .origin = origin_key,
+                        .good = good.name,
+                        .destination = dest_key,
+                        .profit = profit_u16,
+                    });
+                }
+            }
+        }
+
+        try live_profits_mod.writeLiveProfits(entries.items, self.allocator, self.exe_dir);
     }
 
     /// Validates and inserts `value` into `config.thresholds` at its sorted
@@ -532,6 +614,51 @@ pub const AppState = struct {
         self.threshold_state.error_msg = null;
     }
 };
+
+// ── live_profits load-time name->index resolution (Story 3.4) ──────────────
+// Free functions (not AppState methods) so they're directly unit-testable
+// without constructing a full AppState.
+
+/// Returns the OUTPOST_KEYS index of `name`, or null if it names no known
+/// Outpost. Same linear scan convention used throughout this file and
+/// ui/live.zig for Origin/Destination resolution.
+fn indexOfOutpost(name: []const u8) ?usize {
+    for (config_mod.OUTPOST_KEYS, 0..) |key, i| {
+        if (std.mem.eql(u8, name, key)) return i;
+    }
+    return null;
+}
+
+/// Resolves each loaded live_profits.json entry's origin/good/destination
+/// NAME strings against OUTPOST_KEYS/GoodsMap and fills the matching
+/// `profits[origin_idx][good_idx][dest_idx]` cell. Any entry naming an
+/// Origin, Destination or Good no longer present (stale, per the I/O matrix)
+/// is dropped silently — the rest still load normally.
+fn applyLiveProfitEntries(
+    profits: *[12][live.MAX_GOODS][12]f32,
+    goods: *const GoodsMap,
+    entries: []const live_profits_mod.LiveProfitEntry,
+) void {
+    for (entries) |entry| {
+        const origin_idx = indexOfOutpost(entry.origin) orelse continue;
+        const dest_idx = indexOfOutpost(entry.destination) orelse continue;
+        const origin_goods = goods.get(entry.origin) orelse continue;
+
+        var good_idx: ?usize = null;
+        for (origin_goods, 0..) |g, i| {
+            if (std.mem.eql(u8, g.name, entry.good)) {
+                good_idx = i;
+                break;
+            }
+        }
+        const gidx = good_idx orelse continue;
+        if (gidx >= live.MAX_GOODS) continue;
+
+        // entry.profit is the persisted u16; LiveState.profits stays f32 in
+        // memory (the input grid/engine work in floating point).
+        profits[origin_idx][gidx][dest_idx] = @floatFromInt(entry.profit);
+    }
+}
 
 // ── saveRoutes tests (Story 2.5) ─────────────────────────────────────────────
 // Directly construct a minimal AppState — no AppState.init / real dvui window
@@ -1068,7 +1195,7 @@ test "iconBytes: reads and caches a file with a stable pointer; missing file ret
 
 // ── handleOriginChange ──────────────────────────────────────────────────────
 
-test "handleOriginChange clears live_state.profits (Story 3.1)" {
+test "handleOriginChange does NOT clear live_state.profits (Story 3.4)" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -1082,17 +1209,17 @@ test "handleOriginChange clears live_state.profits (Story 3.1)" {
 
     var state = makeThresholdTestState(allocator, exe_dir, cfg);
 
-    state.live_state.profits[0][0] = 42.0;
-    state.live_state.profits[5][3] = 7.5;
-    state.live_state.profits[63][11] = 1.0;
+    state.live_state.profits[0][0][0] = 42.0; // Origin 0 (tirChonaill)
+    state.live_state.profits[0][5][3] = 7.5; // Origin 0 (tirChonaill)
+    state.live_state.profits[1][63][11] = 1.0; // Origin 1 (dunbarton) — the Origin being switched TO
 
     try state.handleOriginChange(1); // switch to "dunbarton"
 
-    for (state.live_state.profits) |row| {
-        for (row) |v| {
-            try std.testing.expectEqual(@as(f32, 0.0), v);
-        }
-    }
+    // Story 3.4 reverses Story 3.1: switching Origin must leave every
+    // Origin's stored profits untouched — nothing is cleared in memory.
+    try std.testing.expectEqual(@as(f32, 42.0), state.live_state.profits[0][0][0]);
+    try std.testing.expectEqual(@as(f32, 7.5), state.live_state.profits[0][5][3]);
+    try std.testing.expectEqual(@as(f32, 1.0), state.live_state.profits[1][63][11]);
 
     allocator.free(state.config.?.origin);
 }
@@ -1225,7 +1352,7 @@ test "calculateLive happy path: populates live_results via the real AppState ent
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
     };
 
-    state.live_state.profits[0][1] = 50.0; // TestGood @ dunbarton: 50 Ducats/unit
+    state.live_state.profits[0][0][1] = 50.0; // Origin 0 (tirChonaill), TestGood @ dunbarton: 50 Ducats/unit
 
     state.calculateLive();
 
@@ -1243,4 +1370,291 @@ test "calculateLive happy path: populates live_results via the real AppState ent
     try std.testing.expectApproxEqAbs(@as(f64, 1000.0), row.total_profit, 0.001);
     // travel = 100 / 0.91 = 109.8901s => 1.831502 min; ducats/min = 1000 / 1.831502 = 546.0
     try std.testing.expectApproxEqAbs(@as(f64, 546.0), row.ducats_per_min, 0.1);
+}
+
+// ── applyLiveProfitEntries (Story 3.4 startup apply) ────────────────────────
+// Free-function tests — no AppState/dvui needed, just a GoodsMap fixture and
+// a raw profits array, mirroring engine/live.zig's own pure-function test
+// style.
+
+test "applyLiveProfitEntries: matched entry resolves names to the correct cell" {
+    const allocator = std.testing.allocator;
+
+    var good_slice = [_]goods_mod.Good{
+        .{ .name = "TestGood", .description = "", .image = "", .weight = 1, .quantityPerSlot = 1, .cost = 0, .merchantRating = 1 },
+    };
+    var gm = GoodsMap.init(allocator);
+    defer gm.deinit();
+    try gm.put("tirChonaill", good_slice[0..]);
+
+    var profits = [_][live.MAX_GOODS][12]f32{[_][12]f32{[_]f32{0.0} ** 12} ** live.MAX_GOODS} ** 12;
+
+    const entries = [_]live_profits_mod.LiveProfitEntry{
+        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "dunbarton", .profit = 42 },
+    };
+
+    applyLiveProfitEntries(&profits, &gm, &entries);
+
+    try std.testing.expectEqual(@as(f32, 42.0), profits[0][0][1]); // tirChonaill=0, TestGood=0, dunbarton=1
+}
+
+test "applyLiveProfitEntries: entries naming an unknown Origin/Destination/Good are dropped silently, rest still apply" {
+    const allocator = std.testing.allocator;
+
+    var good_slice = [_]goods_mod.Good{
+        .{ .name = "TestGood", .description = "", .image = "", .weight = 1, .quantityPerSlot = 1, .cost = 0, .merchantRating = 1 },
+    };
+    var gm = GoodsMap.init(allocator);
+    defer gm.deinit();
+    try gm.put("tirChonaill", good_slice[0..]);
+
+    var profits = [_][live.MAX_GOODS][12]f32{[_][12]f32{[_]f32{0.0} ** 12} ** live.MAX_GOODS} ** 12;
+
+    const entries = [_]live_profits_mod.LiveProfitEntry{
+        // Unknown Origin — dropped.
+        .{ .origin = "notAnOutpost", .good = "TestGood", .destination = "dunbarton", .profit = 1 },
+        // Unknown Destination — dropped.
+        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "notAnOutpost", .profit = 2 },
+        // Unknown Good (not in tirChonaill's GoodsMap slice) — dropped.
+        .{ .origin = "tirChonaill", .good = "NoSuchGood", .destination = "dunbarton", .profit = 3 },
+        // Valid entry — must still apply despite the three stale ones above.
+        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "bangor", .profit = 4 },
+    };
+
+    applyLiveProfitEntries(&profits, &gm, &entries);
+
+    // Nothing but the one valid cell was ever written.
+    try std.testing.expectEqual(@as(f32, 4.0), profits[0][0][2]); // tirChonaill=0, TestGood=0, bangor=2
+    for (profits, 0..) |origin_slice, o| {
+        for (origin_slice, 0..) |good_row, g| {
+            for (good_row, 0..) |v, d| {
+                if (o == 0 and g == 0 and d == 2) continue; // the one expected nonzero cell
+                try std.testing.expectEqual(@as(f32, 0.0), v);
+            }
+        }
+    }
+}
+
+// ── saveLiveProfits (Story 3.4) ──────────────────────────────────────────────
+// Mirrors saveRoutes's exact 3-test pattern (success/no-op/failure).
+
+test "saveLiveProfits success: writes to disk, clears write_error" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var good_slice = [_]goods_mod.Good{
+        .{ .name = "TestGood", .description = "", .image = "", .weight = 1, .quantityPerSlot = 1, .cost = 0, .merchantRating = 1 },
+    };
+    var gm = GoodsMap.init(allocator);
+    defer gm.deinit();
+    try gm.put("tirChonaill", good_slice[0..]);
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = null,
+        .route_matrix = null,
+        .goods = gm,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
+    };
+
+    const before = state.live_state.profits[0]; // all-zero snapshot
+    state.live_state.profits[0][0][1] = 25.0; // tirChonaill/TestGood @ dunbarton
+
+    state.saveLiveProfits(0, before);
+
+    try std.testing.expect(state.live_state.write_error == null);
+
+    const loaded = live_profits_mod.loadLiveProfits(allocator, exe_dir);
+    defer live_profits_mod.deinitLiveProfitEntries(loaded, allocator);
+    try std.testing.expectEqual(@as(usize, 1), loaded.len);
+    try std.testing.expectEqualStrings("tirChonaill", loaded[0].origin);
+    try std.testing.expectEqualStrings("TestGood", loaded[0].good);
+    try std.testing.expectEqualStrings("dunbarton", loaded[0].destination);
+    try std.testing.expectEqual(@as(u16, 25), loaded[0].profit);
+}
+
+test "saveLiveProfits rounds a fractional profit and saturates an out-of-u16-range one" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var good_slice = [_]goods_mod.Good{
+        .{ .name = "GoodA", .description = "", .image = "", .weight = 1, .quantityPerSlot = 1, .cost = 0, .merchantRating = 1 },
+        .{ .name = "GoodB", .description = "", .image = "", .weight = 1, .quantityPerSlot = 1, .cost = 0, .merchantRating = 1 },
+    };
+    var gm = GoodsMap.init(allocator);
+    defer gm.deinit();
+    try gm.put("tirChonaill", good_slice[0..]);
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = null,
+        .route_matrix = null,
+        .goods = gm,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
+    };
+
+    const before = state.live_state.profits[0]; // all-zero snapshot
+    state.live_state.profits[0][0][1] = 12.6; // GoodA @ dunbarton — rounds to 13
+    state.live_state.profits[0][1][1] = 100_000.0; // GoodB @ dunbarton — saturates to u16 max
+
+    state.saveLiveProfits(0, before);
+
+    try std.testing.expect(state.live_state.write_error == null);
+
+    const loaded = live_profits_mod.loadLiveProfits(allocator, exe_dir);
+    defer live_profits_mod.deinitLiveProfitEntries(loaded, allocator);
+    try std.testing.expectEqual(@as(usize, 2), loaded.len);
+
+    var found_a = false;
+    var found_b = false;
+    for (loaded) |entry| {
+        if (std.mem.eql(u8, entry.good, "GoodA")) {
+            try std.testing.expectEqual(@as(u16, 13), entry.profit);
+            found_a = true;
+        } else if (std.mem.eql(u8, entry.good, "GoodB")) {
+            try std.testing.expectEqual(@as(u16, std.math.maxInt(u16)), entry.profit);
+            found_b = true;
+        }
+    }
+    try std.testing.expect(found_a and found_b);
+}
+
+test "saveLiveProfits no-op: unchanged slice triggers no write" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var gm = GoodsMap.init(allocator);
+    defer gm.deinit();
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = null,
+        .route_matrix = null,
+        .goods = gm,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
+    };
+
+    const before = state.live_state.profits[0]; // identical to current — before == current
+
+    state.saveLiveProfits(0, before);
+
+    // No live_profits.json was ever written.
+    if (tmp.dir.access("live_profits.json", .{})) {
+        try std.testing.expect(false); // no-op must not have written the file
+    } else |err| {
+        try std.testing.expect(err == error.FileNotFound);
+    }
+    try std.testing.expect(state.live_state.write_error == null);
+}
+
+test "saveLiveProfits failure: write error reverts the Origin's slice and sets write_error" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_root);
+    // A subdirectory that is never created — writeFile's parent-directory
+    // lookup fails, forcing writeLiveProfits to return an error.
+    const exe_dir = try std.fs.path.join(allocator, &.{ tmp_root, "does_not_exist" });
+    defer allocator.free(exe_dir);
+
+    var good_slice = [_]goods_mod.Good{
+        .{ .name = "TestGood", .description = "", .image = "", .weight = 1, .quantityPerSlot = 1, .cost = 0, .merchantRating = 1 },
+    };
+    var gm = GoodsMap.init(allocator);
+    defer gm.deinit();
+    try gm.put("tirChonaill", good_slice[0..]);
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = null,
+        .route_matrix = null,
+        .goods = gm,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
+    };
+
+    const before = state.live_state.profits[0]; // all-zero snapshot
+    state.live_state.profits[0][0][1] = 25.0;
+
+    state.saveLiveProfits(0, before);
+
+    // Reverted to the pre-edit snapshot.
+    try std.testing.expect(std.meta.eql(state.live_state.profits[0], before));
+
+    // Error surfaced via LiveState.write_error.
+    try std.testing.expect(state.live_state.write_error != null);
+}
+
+// ── runStartupSequence live_profits wiring (Story 3.4 review finding) ──────
+// Every other AppState test in this file hand-builds an AppState struct
+// literal, bypassing init()/runStartupSequence() entirely. applyLiveProfitEntries
+// is otherwise only exercised as a free function with a hand-built profits
+// array and GoodsMap — nothing drives it through the real startup path
+// (real files on disk, self.goods populated by the time it's called, correct
+// call order relative to the goods load). This test closes that gap by going
+// through AppState.init() exactly as main.zig does.
+
+test "AppState.init loads live_profits.json and populates live_state.profits (Story 3.4 startup wiring)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    // routes.json: any well-formed RouteData round-trips via the real writer.
+    try routes_mod.writeRoutes(std.mem.zeroes(RouteData), allocator, exe_dir);
+
+    // goods.json: minimal but real, in loadGoods's expected schema (object of
+    // town -> Good[]), so this exercises the actual parser, not a fixture.
+    try tmp.dir.writeFile(.{
+        .sub_path = "goods.json",
+        .data =
+        \\{"tirChonaill":[{"name":"TestGood","description":"d","image":"i","weight":1,"quantityPerSlot":1,"cost":0,"merchantRating":1}]}
+        ,
+    });
+
+    // live_profits.json: one entry that should resolve cleanly once goods.json
+    // has loaded (tirChonaill=Origin 0, TestGood=index 0, dunbarton=Destination 1).
+    const entries = [_]live_profits_mod.LiveProfitEntry{
+        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "dunbarton", .profit = 77 },
+    };
+    try live_profits_mod.writeLiveProfits(&entries, allocator, exe_dir);
+
+    // No config.json — needs_wizard is expected true; live_profits loading
+    // must not depend on config having loaded (it runs before step 3).
+    var state = AppState.init(allocator, exe_dir);
+    defer state.deinit();
+
+    try std.testing.expect(state.load_error == null); // routes/goods both loaded
+    try std.testing.expectEqual(@as(f32, 77.0), state.live_state.profits[0][0][1]);
 }
