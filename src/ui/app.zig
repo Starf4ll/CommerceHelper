@@ -480,6 +480,13 @@ pub const AppState = struct {
     /// never written (Boundaries). Origin/Good/Destination strings referenced
     /// here are owned by OUTPOST_KEYS/GoodsMap (both outlive this call), so no
     /// duplication/freeing is needed for the entries themselves.
+    ///
+    /// `LiveState.profits` stays `f32` in memory (the input grid parses
+    /// decimal text and the calculation engine works in floating point), but
+    /// real Ducats-per-unit values are always whole numbers well under a
+    /// 16-bit range, so each cell is rounded and saturated into
+    /// `LiveProfitEntry.profit`'s `u16` here — this is also what keeps the
+    /// JSON file itself a plain integer instead of scientific notation.
     fn writeAllLiveProfits(self: *AppState) !void {
         var entries = std.ArrayList(live_profits_mod.LiveProfitEntry).init(self.allocator);
         defer entries.deinit();
@@ -495,12 +502,15 @@ pub const AppState = struct {
                 for (config_mod.OUTPOST_KEYS, 0..) |dest_key, d_idx| {
                     if (d_idx == o_idx) continue;
                     const profit = self.live_state.profits[o_idx][g_idx][d_idx];
-                    if (profit == 0.0) continue;
+                    if (profit <= 0.0) continue;
+                    const rounded = @min(@round(profit), @as(f32, std.math.maxInt(u16)));
+                    const profit_u16: u16 = @intFromFloat(rounded);
+                    if (profit_u16 == 0) continue;
                     try entries.append(.{
                         .origin = origin_key,
                         .good = good.name,
                         .destination = dest_key,
-                        .profit = profit,
+                        .profit = profit_u16,
                     });
                 }
             }
@@ -644,7 +654,9 @@ fn applyLiveProfitEntries(
         const gidx = good_idx orelse continue;
         if (gidx >= live.MAX_GOODS) continue;
 
-        profits[origin_idx][gidx][dest_idx] = entry.profit;
+        // entry.profit is the persisted u16; LiveState.profits stays f32 in
+        // memory (the input grid/engine work in floating point).
+        profits[origin_idx][gidx][dest_idx] = @floatFromInt(entry.profit);
     }
 }
 
@@ -1378,7 +1390,7 @@ test "applyLiveProfitEntries: matched entry resolves names to the correct cell" 
     var profits = [_][live.MAX_GOODS][12]f32{[_][12]f32{[_]f32{0.0} ** 12} ** live.MAX_GOODS} ** 12;
 
     const entries = [_]live_profits_mod.LiveProfitEntry{
-        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "dunbarton", .profit = 42.0 },
+        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "dunbarton", .profit = 42 },
     };
 
     applyLiveProfitEntries(&profits, &gm, &entries);
@@ -1400,13 +1412,13 @@ test "applyLiveProfitEntries: entries naming an unknown Origin/Destination/Good 
 
     const entries = [_]live_profits_mod.LiveProfitEntry{
         // Unknown Origin — dropped.
-        .{ .origin = "notAnOutpost", .good = "TestGood", .destination = "dunbarton", .profit = 1.0 },
+        .{ .origin = "notAnOutpost", .good = "TestGood", .destination = "dunbarton", .profit = 1 },
         // Unknown Destination — dropped.
-        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "notAnOutpost", .profit = 2.0 },
+        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "notAnOutpost", .profit = 2 },
         // Unknown Good (not in tirChonaill's GoodsMap slice) — dropped.
-        .{ .origin = "tirChonaill", .good = "NoSuchGood", .destination = "dunbarton", .profit = 3.0 },
+        .{ .origin = "tirChonaill", .good = "NoSuchGood", .destination = "dunbarton", .profit = 3 },
         // Valid entry — must still apply despite the three stale ones above.
-        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "bangor", .profit = 4.0 },
+        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "bangor", .profit = 4 },
     };
 
     applyLiveProfitEntries(&profits, &gm, &entries);
@@ -1466,7 +1478,61 @@ test "saveLiveProfits success: writes to disk, clears write_error" {
     try std.testing.expectEqualStrings("tirChonaill", loaded[0].origin);
     try std.testing.expectEqualStrings("TestGood", loaded[0].good);
     try std.testing.expectEqualStrings("dunbarton", loaded[0].destination);
-    try std.testing.expectEqual(@as(f32, 25.0), loaded[0].profit);
+    try std.testing.expectEqual(@as(u16, 25), loaded[0].profit);
+}
+
+test "saveLiveProfits rounds a fractional profit and saturates an out-of-u16-range one" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var good_slice = [_]goods_mod.Good{
+        .{ .name = "GoodA", .description = "", .image = "", .weight = 1, .quantityPerSlot = 1, .cost = 0, .merchantRating = 1 },
+        .{ .name = "GoodB", .description = "", .image = "", .weight = 1, .quantityPerSlot = 1, .cost = 0, .merchantRating = 1 },
+    };
+    var gm = GoodsMap.init(allocator);
+    defer gm.deinit();
+    try gm.put("tirChonaill", good_slice[0..]);
+
+    var state = AppState{
+        .allocator = allocator,
+        .exe_dir = exe_dir,
+        .routes = null,
+        .route_matrix = null,
+        .goods = gm,
+        .config = null,
+        .needs_wizard = false,
+        .load_error = null,
+        .icon_cache = std.StringHashMap([]const u8).init(allocator),
+    };
+
+    const before = state.live_state.profits[0]; // all-zero snapshot
+    state.live_state.profits[0][0][1] = 12.6; // GoodA @ dunbarton — rounds to 13
+    state.live_state.profits[0][1][1] = 100_000.0; // GoodB @ dunbarton — saturates to u16 max
+
+    state.saveLiveProfits(0, before);
+
+    try std.testing.expect(state.live_state.write_error == null);
+
+    const loaded = live_profits_mod.loadLiveProfits(allocator, exe_dir);
+    defer live_profits_mod.deinitLiveProfitEntries(loaded, allocator);
+    try std.testing.expectEqual(@as(usize, 2), loaded.len);
+
+    var found_a = false;
+    var found_b = false;
+    for (loaded) |entry| {
+        if (std.mem.eql(u8, entry.good, "GoodA")) {
+            try std.testing.expectEqual(@as(u16, 13), entry.profit);
+            found_a = true;
+        } else if (std.mem.eql(u8, entry.good, "GoodB")) {
+            try std.testing.expectEqual(@as(u16, std.math.maxInt(u16)), entry.profit);
+            found_b = true;
+        }
+    }
+    try std.testing.expect(found_a and found_b);
 }
 
 test "saveLiveProfits no-op: unchanged slice triggers no write" {
@@ -1580,7 +1646,7 @@ test "AppState.init loads live_profits.json and populates live_state.profits (St
     // live_profits.json: one entry that should resolve cleanly once goods.json
     // has loaded (tirChonaill=Origin 0, TestGood=index 0, dunbarton=Destination 1).
     const entries = [_]live_profits_mod.LiveProfitEntry{
-        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "dunbarton", .profit = 77.0 },
+        .{ .origin = "tirChonaill", .good = "TestGood", .destination = "dunbarton", .profit = 77 },
     };
     try live_profits_mod.writeLiveProfits(&entries, allocator, exe_dir);
 

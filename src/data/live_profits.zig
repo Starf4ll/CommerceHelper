@@ -7,14 +7,18 @@
 // survives an Outpost/Good reindex.
 const std = @import("std");
 
-/// One persisted profit cell. `profit` is always > 0.0 on write (callers
-/// filter out blank cells before writing) but this module does not enforce
-/// that on load — a hand-edited 0.0 entry simply round-trips as-is.
+/// One persisted profit cell. `profit` is a whole Ducats-per-unit amount —
+/// real game values never exceed a 16-bit range — stored as `u16` rather
+/// than a float so the JSON always round-trips as a plain integer (a `f32`
+/// field here serializes values like 20.0 as "2e1", not "20"). `profit` is
+/// always > 0 on write (callers filter out blank cells before writing) but
+/// this module does not enforce that on load — a hand-edited 0 entry simply
+/// round-trips as-is.
 pub const LiveProfitEntry = struct {
     origin: []const u8,
     good: []const u8,
     destination: []const u8,
-    profit: f32,
+    profit: u16,
 };
 
 const max_file_size = 4 * 1024 * 1024; // 4 MiB — mirrors goods.zig's ceiling
@@ -94,7 +98,7 @@ pub fn deinitLiveProfitEntries(entries: []LiveProfitEntry, allocator: std.mem.Al
 }
 
 /// Write `entries` to {exe_dir}/live_profits.json. Pure I/O — callers are
-/// expected to have already filtered out blank (profit == 0.0) cells; this
+/// expected to have already filtered out blank (profit == 0) cells; this
 /// module does no filtering of its own.
 pub fn writeLiveProfits(entries: []const LiveProfitEntry, allocator: std.mem.Allocator, exe_dir: []const u8) !void {
     const json = try std.json.stringifyAlloc(allocator, entries, .{ .whitespace = .indent_2 });
@@ -117,11 +121,20 @@ test "writeLiveProfits + loadLiveProfits round-trips entries" {
     defer allocator.free(exe_dir);
 
     const entries = [_]LiveProfitEntry{
-        .{ .origin = "tirChonaill", .good = "Fish", .destination = "dunbarton", .profit = 12.5 },
-        .{ .origin = "tirChonaill", .good = "Herb", .destination = "bangor", .profit = 3.0 },
+        .{ .origin = "tirChonaill", .good = "Fish", .destination = "dunbarton", .profit = 12 },
+        .{ .origin = "tirChonaill", .good = "Herb", .destination = "bangor", .profit = 3 },
     };
 
     try writeLiveProfits(&entries, allocator, exe_dir);
+
+    // The file itself must hold a plain integer, not scientific notation
+    // (e.g. "profit": 12, never "profit": 1.2e1) — read it back as raw text
+    // to pin the exact serialized form (field names like "destination"
+    // legitimately contain 'e', so check the profit value's own token).
+    const raw = try tmp.dir.readFileAlloc(allocator, "live_profits.json", max_file_size);
+    defer allocator.free(raw);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"profit\": 12") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"profit\": 3") != null);
 
     const loaded = loadLiveProfits(allocator, exe_dir);
     defer deinitLiveProfitEntries(loaded, allocator);
@@ -130,9 +143,9 @@ test "writeLiveProfits + loadLiveProfits round-trips entries" {
     try std.testing.expectEqualStrings("tirChonaill", loaded[0].origin);
     try std.testing.expectEqualStrings("Fish", loaded[0].good);
     try std.testing.expectEqualStrings("dunbarton", loaded[0].destination);
-    try std.testing.expectEqual(@as(f32, 12.5), loaded[0].profit);
+    try std.testing.expectEqual(@as(u16, 12), loaded[0].profit);
     try std.testing.expectEqualStrings("Herb", loaded[1].good);
-    try std.testing.expectEqual(@as(f32, 3.0), loaded[1].profit);
+    try std.testing.expectEqual(@as(u16, 3), loaded[1].profit);
 }
 
 test "loadLiveProfits: missing file returns empty result, no error" {
