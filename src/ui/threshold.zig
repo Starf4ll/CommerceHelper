@@ -1,4 +1,4 @@
-// ui/threshold.zig — Threshold Mode table (Story 2.6)
+// ui/threshold.zig — Threshold Mode Good sub-tabs (Story 4.2)
 const std = @import("std");
 const dvui = @import("dvui");
 
@@ -8,11 +8,19 @@ const config_mod = @import("../data/config.zig");
 const goods_mod = @import("../data/goods.zig");
 const Good = goods_mod.Good;
 
-/// Persistent UI state for the "add new threshold" input row (Story 2.7),
-/// stored on AppState exactly like SettingsState/settings_state.
+/// Persistent UI state for the "add new threshold" input row (Story 2.7) and
+/// the active Good sub-tab (Story 4.2), stored on AppState exactly like
+/// SettingsState/settings_state.
 pub const ThresholdState = struct {
     new_value: u32 = 0,
     error_msg: ?[]const u8 = null,
+
+    /// Index into the current Origin's eligible-Good slots
+    /// (`slot.cells[0..slot.good_count]`), mirroring
+    /// `SettingsState.settings_tab`'s placement. Reset/clamped every frame in
+    /// `renderTab` whenever it is out of range for the current Origin's
+    /// `good_count` — never assumed valid across an Origin switch.
+    active_good_idx: usize = 0,
 };
 
 /// Renders one placeholder label, centered, matching the "no data yet" style
@@ -23,6 +31,28 @@ fn placeholder(text: []const u8) void {
         .gravity_x = 0.5,
         .margin = .{ .y = 16, .x = 16 },
     });
+}
+
+/// Clamps `active_good_idx` to a valid sub-tab index for `good_count`
+/// eligible Goods at the current Origin — falls back to 0 whenever the
+/// previous index is out of range (including `good_count == 0`, where 0
+/// simply remains the resting value until a Good becomes eligible again).
+/// Pure/dvui-free so the Origin-switch reset behavior is directly
+/// unit-testable, unlike the render code that calls it.
+fn clampActiveGoodIdx(active_good_idx: usize, good_count: u8) usize {
+    if (active_good_idx >= good_count) return 0;
+    return active_good_idx;
+}
+
+/// Selects the placeholder message for a zero-eligible-Goods Origin (I/O
+/// matrix's "No eligible Goods" row) — matches `ui/live.zig`'s existing
+/// wording verbatim for consistency. Returns null when there's at least one
+/// eligible Good, telling the caller to render the sub-tab row instead.
+/// Pure/dvui-free so it's directly unit-testable — mirrors `live.zig`'s
+/// `resultsMessage` convention.
+fn noGoodsPlaceholder(good_count: u8) ?[]const u8 {
+    if (good_count == 0) return "No Goods available at your Merchant Rating for this Origin";
+    return null;
 }
 
 pub fn renderTab(app_state: *AppState) !void {
@@ -57,7 +87,70 @@ pub fn renderTab(app_state: *AppState) !void {
 
     const origin_goods = app_state.goods.?.get(origin) orelse &[_]goods_mod.Good{};
 
-    // ── New Threshold input row (Story 2.7) ────────────────────────────────────
+    // Never assume the previously active sub-tab is still valid — an Origin
+    // switch (or a Config change shrinking eligibility) may have shrunk
+    // good_count since the index was last set.
+    app_state.threshold_state.active_good_idx = clampActiveGoodIdx(
+        app_state.threshold_state.active_good_idx,
+        slot.good_count,
+    );
+
+    // ── Good sub-tab row + active content (Story 4.2) — rendered first, above
+    // the shared Threshold controls below; one button per eligible Good,
+    // built entirely off slot.good_count/cells, never a hardcoded count ───────
+    if (noGoodsPlaceholder(slot.good_count)) |msg| {
+        placeholder(msg);
+    } else {
+        // `frame_active_good_idx` is snapshotted once, before the loop, and
+        // used for every `active`/`active_good` decision this frame. Reading
+        // `app_state.threshold_state.active_good_idx` live from inside the
+        // loop instead would break the moment a click mutates it mid-loop: a
+        // click on a lower-index tab mutates the field before the loop
+        // reaches the g that used to match the *old* value, so that match
+        // never fires and a higher-index tab's stale-active match already
+        // fired-or-didn't earlier in the same pass — either way `active_good`
+        // could be left `undefined` for the rest of the frame, and
+        // `active_good.name` below would then read garbage. The snapshot
+        // guarantees exactly one g matches, every frame, regardless of when a
+        // click lands.
+        var active_good: Good = undefined;
+        const frame_active_good_idx = app_state.threshold_state.active_good_idx;
+        {
+            var tab_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .expand = .horizontal,
+                .margin = .{ .x = 8, .y = 2 },
+            });
+            defer tab_row.deinit();
+
+            for (0..slot.good_count) |g| {
+                const good_idx = slot.cells[g][0][0].good_idx;
+                const good = origin_goods[good_idx];
+                const active = frame_active_good_idx == g;
+                if (active) active_good = good;
+
+                if (goodTabButton(good, active, g, app_state)) {
+                    app_state.threshold_state.active_good_idx = g;
+                }
+            }
+        }
+
+        // Active Good's content area — placeholder body for this story;
+        // Story 4.3 replaces this with the real per-Threshold/per-Destination
+        // table. `active_good` is always set by the loop above:
+        // `frame_active_good_idx` was just clamped to
+        // `[0, slot.good_count)`, and the loop covers exactly that range
+        // against the same snapshotted value, so its `g ==
+        // frame_active_good_idx` branch always fires exactly once.
+        dvui.label(@src(), "{s}", .{active_good.name}, .{
+            .expand = .horizontal,
+            .margin = .{ .x = 16, .y = 8 },
+        });
+    }
+
+    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 2 } });
+
+    // ── New Threshold input row (Story 2.7) — shared across every Good's tab,
+    // rendered below the sub-tabs above (Story 4.2) ─────────────────────────────
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
@@ -93,80 +186,36 @@ pub fn renderTab(app_state: *AppState) !void {
         });
     }
 
-    // ── Header row ───────────────────────────────────────────────────────────
+    // ── Existing Thresholds list (Story 2.7's Remove control, relocated here
+    // alongside the Add row above — Story 4.2) — shared across every Good's
+    // tab since the Threshold list itself is shared; reuses removeThreshold
+    // unchanged ──────────────────────────────────────────────────────────────
     {
-        var header = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
+        dvui.label(@src(), "Existing Thresholds:", .{}, .{
             .margin = .{ .x = 16, .y = 4 },
         });
-        defer header.deinit();
 
-        dvui.label(@src(), "Threshold", .{}, .{ .min_size_content = .{ .w = 70 } });
-        dvui.label(@src(), "Good", .{}, .{ .min_size_content = .{ .w = 170 } });
-        dvui.label(@src(), "Transport", .{}, .{ .min_size_content = .{ .w = 100 } });
-        dvui.label(@src(), "Destination", .{}, .{ .min_size_content = .{ .w = 100 } });
-        dvui.label(@src(), "Ducats/min", .{}, .{ .min_size_content = .{ .w = 100 } });
-        dvui.label(@src(), "", .{}, .{ .min_size_content = .{ .w = 70 } });
-    }
-    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 2 } });
-
-    // ── Rows: one per configured Threshold, ascending, as sweepOrigin stored
-    // them — no re-sorting here.
-    for (slot.rows[0..slot.count], 0..) |row, row_idx| {
-        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .margin = .{ .x = 16, .y = 2 },
-            .id_extra = row_idx,
-        });
-        defer hbox.deinit();
-
-        dvui.label(@src(), "{d}", .{row.threshold}, .{
-            .gravity_y = 0.5,
-            .min_size_content = .{ .w = 70 },
-            .id_extra = row_idx,
-        });
-
-        if (!row.has_result) {
-            dvui.label(@src(), "No route available", .{}, .{
-                .gravity_y = 0.5,
+        const cfg = app_state.config.?;
+        for (cfg.thresholds[0..cfg.thresholdCount], 0..) |threshold_value, t_idx| {
+            var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
                 .expand = .horizontal,
-                .id_extra = row_idx,
+                .margin = .{ .x = 16, .y = 2 },
+                .id_extra = t_idx,
             });
+            defer row.deinit();
+
+            dvui.label(@src(), "{d}", .{threshold_value}, .{
+                .gravity_y = 0.5,
+                .min_size_content = .{ .w = 70 },
+                .id_extra = t_idx,
+            });
+
             if (dvui.button(@src(), "Remove", .{}, .{
                 .min_size_content = .{ .w = 70 },
-                .id_extra = row_idx,
+                .id_extra = t_idx,
             })) {
-                app_state.removeThreshold(row_idx);
+                app_state.removeThreshold(t_idx);
             }
-            continue;
-        }
-
-        const good = origin_goods[row.good_idx];
-        goodCell(good, row_idx, app_state);
-
-        dvui.label(@src(), "{s}", .{row.transport_name}, .{
-            .gravity_y = 0.5,
-            .min_size_content = .{ .w = 100 },
-            .id_extra = row_idx,
-        });
-
-        dvui.label(@src(), "{s}", .{config_mod.OUTPOST_DISPLAY_NAMES[row.destination_idx]}, .{
-            .gravity_y = 0.5,
-            .min_size_content = .{ .w = 100 },
-            .id_extra = row_idx,
-        });
-
-        dvui.label(@src(), "{d:.1}", .{row.ducats_per_min}, .{
-            .gravity_y = 0.5,
-            .min_size_content = .{ .w = 100 },
-            .id_extra = row_idx,
-        });
-
-        if (dvui.button(@src(), "Remove", .{}, .{
-            .min_size_content = .{ .w = 70 },
-            .id_extra = row_idx,
-        })) {
-            app_state.removeThreshold(row_idx);
         }
     }
 }
@@ -207,4 +256,72 @@ fn goodCell(good: Good, id_extra: usize, app_state: *AppState) void {
         .{good.description},
         .{ .id_extra = id_extra },
     );
+}
+
+/// Renders one Good sub-tab button (icon + name + description tooltip),
+/// highlighted when active, using the exact color-fill-by-active-state
+/// convention `app.zig`'s Threshold/Live tab row and `settings.zig`'s
+/// General/Route Times sub-tab row already use. Built directly on
+/// `dvui.ButtonWidget` (the same building block `dvui.button` wraps) with
+/// `goodCell` rendered as its content — reuses `goodCell`'s exact
+/// icon/label/tooltip mechanics as-is (it parents itself under whatever
+/// widget is current, which `bw.install()` below makes this button) rather
+/// than duplicating the tooltip-attachment logic under a near-identical copy.
+fn goodTabButton(good: Good, active: bool, id_extra: usize, app_state: *AppState) bool {
+    var bw = dvui.ButtonWidget.init(@src(), .{}, .{
+        .margin = .{ .x = 2 },
+        .id_extra = id_extra,
+        .color_fill = if (active)
+            dvui.Color{ .r = 80, .g = 120, .b = 200, .a = 255 }
+        else
+            dvui.Color{ .r = 60, .g = 60, .b = 60, .a = 255 },
+    });
+    bw.install();
+    bw.processEvents();
+    bw.drawBackground();
+    const click = bw.clicked();
+
+    goodCell(good, id_extra, app_state);
+
+    bw.drawFocus();
+    bw.deinit();
+
+    return click;
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+// The render code above requires a live dvui window (see Verification's
+// manual-check note); the branching decisions it makes are extracted into
+// pure functions above (clampActiveGoodIdx, noGoodsPlaceholder) specifically
+// so they're directly unit-testable, mirroring `live.zig`'s
+// resultsMessage/travelMinutes/parseProfitInput convention.
+
+test "clampActiveGoodIdx: in-range index passes through unchanged" {
+    try std.testing.expectEqual(@as(usize, 2), clampActiveGoodIdx(2, 5));
+}
+
+test "clampActiveGoodIdx: index exactly equal to good_count is out of range, resets to 0" {
+    try std.testing.expectEqual(@as(usize, 0), clampActiveGoodIdx(2, 2));
+}
+
+test "clampActiveGoodIdx: Origin switch shrinking good_count resets an out-of-range index to 0" {
+    // active_good_idx == 4 was valid for the previous Origin; the new
+    // Origin's good_count == 2 no longer covers it.
+    try std.testing.expectEqual(@as(usize, 0), clampActiveGoodIdx(4, 2));
+}
+
+test "clampActiveGoodIdx: zero eligible Goods resets to 0" {
+    try std.testing.expectEqual(@as(usize, 0), clampActiveGoodIdx(3, 0));
+}
+
+test "noGoodsPlaceholder: zero eligible Goods returns the placeholder message" {
+    try std.testing.expectEqualStrings(
+        "No Goods available at your Merchant Rating for this Origin",
+        noGoodsPlaceholder(0).?,
+    );
+}
+
+test "noGoodsPlaceholder: nonzero good_count returns null so the caller renders sub-tabs" {
+    try std.testing.expect(noGoodsPlaceholder(3) == null);
+    try std.testing.expect(noGoodsPlaceholder(1) == null);
 }
