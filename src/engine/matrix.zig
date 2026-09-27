@@ -8,21 +8,21 @@ pub const RouteMatrix = struct {
 
 // ── Index constants ───────────────────────────────────────────────────────────
 // Must match OUTPOST_KEYS in src/data/config.zig:
-//   0=tirChonaill  1=dunbarton  2=bangor   3=cobh
-//   4=tara         5=emainMacha 6=taillteann 7=belvast
-//   8=qilla        9=cor        10=filia   11=vales
+//   0=tirChonaill  1=dunbarton  2=bangor     3=emainMacha
+//   4=taillteann   5=tara       6=cobh       7=belvast
+//   8=qilla        9=filia      10=cor       11=vales
 
 const TC  = 0; // tirChonaill
 const DUN = 1; // dunbarton
 const BAN = 2; // bangor
-const COB = 3; // cobh
-const TAR = 4; // tara
-const EMA = 5; // emainMacha
-const TAI = 6; // taillteann
+const EMA = 3; // emainMacha
+const TAI = 4; // taillteann
+const TAR = 5; // tara
+const COB = 6; // cobh
 const BEL = 7; // belvast
 const QIL = 8; // qilla
-const COR = 9; // cor
-const FIL = 10; // filia
+const FIL = 9; // filia
+const COR = 10; // cor
 const VAL = 11; // vales
 
 /// Build a RouteMatrix from parsed RouteData.  No allocator required — the

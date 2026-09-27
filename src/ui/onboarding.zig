@@ -218,14 +218,14 @@ pub fn render(state: *WizardState, app_state: *AppState) !void {
         all_ratings_valid = ratingRow("Tir Chonaill", &state.tirChonaill, 0) and all_ratings_valid;
         all_ratings_valid = ratingRow("Dunbarton", &state.dunbarton, 1) and all_ratings_valid;
         all_ratings_valid = ratingRow("Bangor", &state.bangor, 2) and all_ratings_valid;
-        all_ratings_valid = ratingRow("Cobh", &state.cobh, 3) and all_ratings_valid;
-        all_ratings_valid = ratingRow("Tara", &state.tara, 4) and all_ratings_valid;
-        all_ratings_valid = ratingRow("Emain Macha", &state.emainMacha, 5) and all_ratings_valid;
-        all_ratings_valid = ratingRow("Taillteann", &state.taillteann, 6) and all_ratings_valid;
+        all_ratings_valid = ratingRow("Emain Macha", &state.emainMacha, 3) and all_ratings_valid;
+        all_ratings_valid = ratingRow("Taillteann", &state.taillteann, 4) and all_ratings_valid;
+        all_ratings_valid = ratingRow("Tara", &state.tara, 5) and all_ratings_valid;
+        all_ratings_valid = ratingRow("Cobh", &state.cobh, 6) and all_ratings_valid;
         all_ratings_valid = ratingRow("Belvast", &state.belvast, 7) and all_ratings_valid;
         all_ratings_valid = ratingRow("Qilla", &state.qilla, 8) and all_ratings_valid;
-        all_ratings_valid = ratingRow("Cor", &state.cor, 9) and all_ratings_valid;
-        all_ratings_valid = ratingRow("Filia", &state.filia, 10) and all_ratings_valid;
+        all_ratings_valid = ratingRow("Filia", &state.filia, 9) and all_ratings_valid;
+        all_ratings_valid = ratingRow("Cor", &state.cor, 10) and all_ratings_valid;
         all_ratings_valid = ratingRow("Vales", &state.vales, 11) and all_ratings_valid;
     }
 
