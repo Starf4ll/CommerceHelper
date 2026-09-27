@@ -56,9 +56,14 @@ pub const AppState = struct {
     // results rendering must tell apart.
     live_results: ?live_engine.LiveResults = null,
 
-    // ── Threshold engine cache (Story 2.4) ────────────────────────────────────
+    // ── Threshold engine cache (Story 2.4; heap-boxed by Story 4.1) ──────────
     // One slot per Outpost (index matches OUTPOST_KEYS/config.zig order).
-    threshold_cache: [12]?threshold_mod.OriginResult = [_]?threshold_mod.OriginResult{null} ** 12,
+    // `OriginResult` grew far larger with the per-Good matrix sweep (Story
+    // 4.1) than AppState's plain stack frame can hold inline, so each
+    // populated slot is a GPA-owned pointer instead of an inline value —
+    // `updateCache` (engine/threshold.zig) is solely responsible for
+    // `create()`-ing and `destroy()`-ing them.
+    threshold_cache: [12]?*threshold_mod.OriginResult = [_]?*threshold_mod.OriginResult{null} ** 12,
     threshold_cache_stale: bool = true,
 
     // ── Icon byte cache (Story 2.6) ────────────────────────────────────────────
@@ -92,6 +97,16 @@ pub const AppState = struct {
         }
         if (self.load_error) |err| {
             self.allocator.free(err.message);
+        }
+        // Every non-null threshold_cache slot is a GPA-owned box (Story 4.1)
+        // — destroy them all on shutdown, same convention as the icon cache
+        // below, so a full AppState lifecycle leaks nothing under
+        // std.testing.allocator.
+        for (&self.threshold_cache) |*slot| {
+            if (slot.*) |ptr| {
+                self.allocator.destroy(ptr);
+                slot.* = null;
+            }
         }
         var icon_it = self.icon_cache.valueIterator();
         while (icon_it.next()) |bytes| {
@@ -178,6 +193,7 @@ pub const AppState = struct {
             self.config,
             self.goods,
             self.route_matrix,
+            self.allocator,
         );
         if (was_stale) {
             self.live_results = null;
@@ -1657,4 +1673,61 @@ test "AppState.init loads live_profits.json and populates live_state.profits (St
 
     try std.testing.expect(state.load_error == null); // routes/goods both loaded
     try std.testing.expectEqual(@as(f32, 77.0), state.live_state.profits[0][0][1]);
+}
+
+// ── threshold_cache leak check (Story 4.1 review finding) ──────────────────
+// Every other AppState test that exercises `.update()` uses
+// `makeThresholdTestState` (goods=null, route_matrix=null), so `updateCache`
+// always guard-clauses out before ever allocating; every test that calls
+// `.deinit()` never populates `threshold_cache` first. Neither path would
+// catch a regression in `AppState.deinit()`'s threshold_cache destroy loop
+// (wrong allocator, wrong field, or dropped entirely) — `zig build test`
+// would stay green while every real run leaked. This test goes through the
+// real `AppState.init()` startup path (real routes/goods/config.json, same
+// convention as the live_profits startup-wiring test above) so `.update()`
+// actually `allocator.create()`s a threshold_cache slot, then relies on
+// `std.testing.allocator`'s leak detector (checked at process exit) to catch
+// any regression in the matching `destroy()` inside `.deinit()`.
+test "AppState.deinit() frees a real threshold_cache pointer created via update() (Story 4.1 leak check)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    // routes.json: any well-formed RouteData round-trips via the real writer.
+    try routes_mod.writeRoutes(std.mem.zeroes(RouteData), allocator, exe_dir);
+
+    // goods.json: a real, parsed (not hand-built) Good at tirChonaill, so
+    // AppState.deinit()'s normal deinitGoodsMap path stays safe to exercise.
+    try tmp.dir.writeFile(.{
+        .sub_path = "goods.json",
+        .data =
+        \\{"tirChonaill":[{"name":"TestGood","description":"d","image":"i","weight":10,"quantityPerSlot":5,"cost":0,"merchantRating":1}]}
+        ,
+    });
+
+    // config.json: a valid, wizard-completed Config with an Origin set and
+    // one owned Transport — required for update()/updateCache to actually
+    // reach the allocation path instead of guard-clausing out on a null
+    // config or empty origin.
+    var cfg = Config{};
+    cfg.origin = "tirChonaill";
+    cfg.transports.backpack = true;
+    try config_mod.writeConfig(cfg, allocator, exe_dir);
+
+    var state = AppState.init(allocator, exe_dir);
+    defer state.deinit();
+
+    try std.testing.expect(state.load_error == null);
+    try std.testing.expect(!state.needs_wizard);
+
+    // The only real path that ever allocator.create()s a threshold_cache
+    // slot — mirrors what render() does every frame via AppState.update().
+    state.update();
+
+    try std.testing.expect(state.threshold_cache[0] != null);
+    // state.deinit() (deferred above) must destroy() this exact pointer via
+    // the same allocator that created it.
 }
