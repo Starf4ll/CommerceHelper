@@ -442,9 +442,10 @@ fn renderGoodContent(
     }
 }
 
-/// Renders a Good's icon (if readable) + name, with its description as a
-/// hover tooltip (AD-8). Icon read failure falls back to name-only, never
-/// crashes — iconBytes() returns null on any read error.
+/// Renders a Good's icon (if readable and decodable) + name, with its
+/// description as a hover tooltip (AD-8). Icon failure falls back to
+/// name-only, never crashes — iconTexture() returns null on either a read
+/// error or a decode error.
 fn goodCell(good: Good, id_extra: usize, app_state: *AppState) void {
     var wd: dvui.WidgetData = undefined;
     var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -455,9 +456,9 @@ fn goodCell(good: Good, id_extra: usize, app_state: *AppState) void {
     });
     defer cell.deinit();
 
-    if (app_state.iconBytes(good.image)) |bytes| {
+    if (app_state.iconTexture(good.image)) |tex| {
         _ = dvui.image(@src(), .{
-            .source = .{ .imageFile = .{ .bytes = bytes, .name = good.image } },
+            .source = .{ .texture = tex },
         }, .{
             .min_size_content = .{ .w = 20, .h = 20 },
             .gravity_y = 0.5,

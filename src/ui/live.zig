@@ -106,8 +106,8 @@ fn profitField(value: *f32, id_extra: usize, tab_index: u16) void {
     te.deinit();
 }
 
-/// Renders a Good's icon (if readable) + name, horizontally centered, as a
-/// standalone block header sitting above its Destination rows.
+/// Renders a Good's icon (if readable and decodable) + name, horizontally
+/// centered, as a standalone block header sitting above its Destination rows.
 ///
 /// Deliberately not `threshold.goodCell`: that helper is designed to sit
 /// beside other same-row cells in a horizontal row (it uses `.gravity_y` for
@@ -127,9 +127,9 @@ fn goodHeader(good: Good, id_extra: usize, app_state: *AppState) void {
     });
     defer header.deinit();
 
-    if (app_state.iconBytes(good.image)) |bytes| {
+    if (app_state.iconTexture(good.image)) |tex| {
         _ = dvui.image(@src(), .{
-            .source = .{ .imageFile = .{ .bytes = bytes, .name = good.image } },
+            .source = .{ .texture = tex },
         }, .{
             .min_size_content = .{ .w = 20, .h = 20 },
             .gravity_y = 0.5,
@@ -152,9 +152,10 @@ fn goodHeader(good: Good, id_extra: usize, app_state: *AppState) void {
     );
 }
 
-/// Renders a Good's icon (if readable) + name, with its description as a
-/// hover tooltip (AD-8). Icon read failure falls back to name-only, never
-/// crashes — iconBytes() returns null on any read error.
+/// Renders a Good's icon (if readable and decodable) + name, with its
+/// description as a hover tooltip (AD-8). Icon failure falls back to
+/// name-only, never crashes — iconTexture() returns null on either a read
+/// error or a decode error.
 ///
 /// Mirrors `threshold.zig`'s module-private `goodCell` exactly (same
 /// icon/label/tooltip mechanics) — that helper isn't exported, so a result
@@ -170,9 +171,9 @@ fn goodCell(good: Good, id_extra: usize, app_state: *AppState) void {
     });
     defer cell.deinit();
 
-    if (app_state.iconBytes(good.image)) |bytes| {
+    if (app_state.iconTexture(good.image)) |tex| {
         _ = dvui.image(@src(), .{
-            .source = .{ .imageFile = .{ .bytes = bytes, .name = good.image } },
+            .source = .{ .texture = tex },
         }, .{
             .min_size_content = .{ .w = 20, .h = 20 },
             .gravity_y = 0.5,
