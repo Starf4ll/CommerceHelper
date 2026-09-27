@@ -172,7 +172,20 @@ pub fn renderTab(app_state: *AppState) !void {
 
     // ── Good sub-tab row (Story 4.2) — one button per eligible Good, built
     // entirely off slot.good_count/cells, never a hardcoded count ───────────────
+    //
+    // `frame_active_good_idx` is snapshotted once, before the loop, and used
+    // for every `active`/`active_good` decision this frame. Reading
+    // `app_state.threshold_state.active_good_idx` live from inside the loop
+    // instead would break the moment a click mutates it mid-loop: a click on
+    // a lower-index tab mutates the field before the loop reaches the g that
+    // used to match the *old* value, so that match never fires and a
+    // higher-index tab's stale-active match already fired-or-didn't earlier
+    // in the same pass — either way `active_good` could be left `undefined`
+    // for the rest of the frame, and `active_good.name` below would then
+    // read garbage. The snapshot guarantees exactly one g matches, every
+    // frame, regardless of when a click lands.
     var active_good: Good = undefined;
+    const frame_active_good_idx = app_state.threshold_state.active_good_idx;
     {
         var tab_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
@@ -183,7 +196,7 @@ pub fn renderTab(app_state: *AppState) !void {
         for (0..slot.good_count) |g| {
             const good_idx = slot.cells[g][0][0].good_idx;
             const good = origin_goods[good_idx];
-            const active = app_state.threshold_state.active_good_idx == g;
+            const active = frame_active_good_idx == g;
             if (active) active_good = good;
 
             if (goodTabButton(good, active, g, app_state)) {
@@ -196,9 +209,10 @@ pub fn renderTab(app_state: *AppState) !void {
 
     // ── Active Good's content area — placeholder body for this story; Story
     // 4.3 replaces this with the real per-Threshold/per-Destination table.
-    // `active_good` is always set by the loop above: active_good_idx was just
-    // clamped to `[0, slot.good_count)`, and the loop covers exactly that
-    // range, so its `g == active_good_idx` branch always fires exactly once.
+    // `active_good` is always set by the loop above: `frame_active_good_idx`
+    // was just clamped to `[0, slot.good_count)`, and the loop covers exactly
+    // that range against the same snapshotted value, so its `g ==
+    // frame_active_good_idx` branch always fires exactly once.
     {
         dvui.label(@src(), "{s}", .{active_good.name}, .{
             .expand = .horizontal,
