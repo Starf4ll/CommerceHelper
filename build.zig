@@ -142,6 +142,17 @@ pub fn build(b: *std.Build) void {
     const run_routes_tests = b.addRunArtifact(routes_tests);
     test_step.dependOn(&run_routes_tests.step);
 
+    // `zig build test` — run live_profits data-layer unit tests (Story 3.4).
+    // No embedded_assets import needed — unlike routes.zig/goods.zig, this
+    // file has no shipped default and is absent until the first save.
+    const live_profits_tests = b.addTest(.{
+        .root_source_file = b.path("src/data/live_profits.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_live_profits_tests = b.addRunArtifact(live_profits_tests);
+    test_step.dependOn(&run_live_profits_tests.step);
+
     // `zig build test` — run AppState orchestration unit tests (Story 2.5:
     // AppState.saveRoutes success/no-op/failure paths).
     const app_tests = b.addTest(.{
@@ -158,6 +169,13 @@ pub fn build(b: *std.Build) void {
     app_tests.root_module.addImport("../data/config.zig", config_mod);
     app_tests.root_module.addImport("../data/goods.zig", goods_mod);
     app_tests.root_module.addImport("../data/routes.zig", routes_mod);
+    // app.zig also imports "../data/live_profits.zig" directly (Story 3.4) —
+    // register it the same way as routes_mod. It only imports "std", so no
+    // further sibling-import registration is needed for it.
+    const live_profits_mod = b.createModule(.{
+        .root_source_file = b.path("src/data/live_profits.zig"),
+    });
+    app_tests.root_module.addImport("../data/live_profits.zig", live_profits_mod);
     // engine/matrix.zig is reached two ways here: directly by app.zig
     // ("../engine/matrix.zig") and internally by engine/threshold.zig's own
     // sibling import ("matrix.zig"). Build ONE module for it and override

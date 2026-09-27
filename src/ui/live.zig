@@ -14,20 +14,23 @@ const engine_live = @import("../engine/live.zig");
 /// the two modules, so each keeps its own copy of this constant.
 pub const MAX_GOODS: usize = 64;
 
-/// Per-Good, per-Destination profit inputs (FR entered by the player in Live
-/// Mode). `profits[good_idx][dest_idx]` keys off the Good's position in
-/// `origin_goods` (stable — only changes on Origin swap, which clears this
-/// whole array) and the Destination's OUTPOST_KEYS index (0-11; the origin's
-/// own slot is simply never read or written).
+/// Per-Origin, per-Good, per-Destination profit inputs (FR entered by the
+/// player in Live Mode), persisted across sessions and Origins (Story 3.4).
+/// `profits[origin_idx][good_idx][dest_idx]` keys off the Origin's
+/// OUTPOST_KEYS index (0-11), the Good's position in that Origin's
+/// `origin_goods` slice (stable — only changes if the Good list itself
+/// changes), and the Destination's OUTPOST_KEYS index (0-11; an Origin's own
+/// slot is simply never read or written). Switching the viewed Origin only
+/// changes which `profits[origin_idx]` slice the grid reads/writes — it is
+/// never cleared.
 pub const LiveState = struct {
-    profits: [MAX_GOODS][12]f32 = [_][12]f32{[_]f32{0.0} ** 12} ** MAX_GOODS,
-};
+    profits: [12][MAX_GOODS][12]f32 = [_][MAX_GOODS][12]f32{[_][12]f32{[_]f32{0.0} ** 12} ** MAX_GOODS} ** 12,
 
-/// Resets every stored profit to 0.0 — called whenever the Origin changes,
-/// since profit inputs are Origin-specific and never persisted.
-pub fn clearProfits(state: *LiveState) void {
-    state.profits = [_][12]f32{[_]f32{0.0} ** 12} ** MAX_GOODS;
-}
+    /// Set when the most recent `AppState.saveLiveProfits` write to
+    /// live_profits.json failed — mirrors `SettingsState.write_error`.
+    /// Cleared on the next successful save.
+    write_error: ?[]const u8 = null,
+};
 
 /// Renders one placeholder label, centered, matching the "no data yet" style
 /// used elsewhere in this tab (mirrors `threshold.zig`'s placeholder).
@@ -72,8 +75,9 @@ fn profitField(value: *f32, id_extra: usize, tab_index: u16) void {
     const buffer = dvui.dataGetSliceDefault(null, id, "buffer", []u8, &[_]u8{0} ** 32);
 
     // Resync the buffer whenever the stored value changed from outside this
-    // widget's own edits (e.g. clearProfits resetting it to 0.0 on Origin
-    // change) — same convention as dvui.textEntryNumber's init-value sync.
+    // widget's own edits (e.g. switching Origin swaps which profits[idx]
+    // slice this same widget id now points at) — same convention as
+    // dvui.textEntryNumber's init-value sync.
     const old_value = dvui.dataGet(null, id, "value", f32);
     if (old_value == null or old_value.? != value.*) {
         dvui.dataSet(null, id, "value", value.*);
@@ -302,6 +306,11 @@ pub fn renderTab(app_state: *AppState) !void {
     var tab_counter: u16 = 1;
     var any_visible = false;
 
+    // Snapshot this Origin's profit slice before rendering its fields, so
+    // saveLiveProfits (below) can tell whether anything changed this frame —
+    // exact convention as saveRoutes's before/after diff.
+    const profits_before = app_state.live_state.profits[idx];
+
     for (origin_goods, 0..) |good, good_idx| {
         // FR-5: hide a Good's entire block when its merchantRating exceeds
         // the player's rating at the current Origin — identical comparison
@@ -342,12 +351,24 @@ pub fn renderTab(app_state: *AppState) !void {
                     .id_extra = dest_idx,
                 });
 
-                profitField(&app_state.live_state.profits[good_idx][dest_idx], dest_idx, tab_counter);
+                profitField(&app_state.live_state.profits[idx][good_idx][dest_idx], dest_idx, tab_counter);
                 tab_counter += 1;
             }
         }
 
         _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 4 }, .id_extra = good_idx });
+    }
+
+    // Persist any profit-field edit this frame (no-op if nothing changed) —
+    // exact saveRoutes convention: diff-before-write, revert+error on failure.
+    app_state.saveLiveProfits(idx, profits_before);
+
+    if (app_state.live_state.write_error) |msg| {
+        dvui.label(@src(), "Error: {s}", .{msg}, .{
+            .expand = .horizontal,
+            .margin = .{ .y = 4, .x = 16 },
+            .color_text = .{ .r = 200, .g = 50, .b = 50, .a = 255 },
+        });
     }
 
     if (!any_visible) {
@@ -469,32 +490,6 @@ test "parseProfitInput: negative text clamps to 0.0" {
 
 test "parseProfitInput: valid decimal parses through" {
     try std.testing.expectEqual(@as(f32, 12.5), parseProfitInput("12.5"));
-}
-
-// ── clearProfits tests ───────────────────────────────────────────────────────
-
-test "clearProfits resets every slot to 0.0" {
-    var state = LiveState{};
-    state.profits[0][0] = 42.0;
-    state.profits[3][11] = 7.5;
-    state.profits[63][5] = 1.0;
-
-    clearProfits(&state);
-
-    for (state.profits) |row| {
-        for (row) |v| {
-            try std.testing.expectEqual(@as(f32, 0.0), v);
-        }
-    }
-}
-
-test "LiveState defaults to all-zero profits" {
-    const state = LiveState{};
-    for (state.profits) |row| {
-        for (row) |v| {
-            try std.testing.expectEqual(@as(f32, 0.0), v);
-        }
-    }
 }
 
 // ── resultsMessage tests (Story 3.3) ────────────────────────────────────────
