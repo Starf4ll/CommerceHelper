@@ -591,9 +591,10 @@ pub const AppState = struct {
         return .ok;
     }
 
-    /// Removes the threshold at `index` (as taken directly from the render
-    /// loop's `slot.rows` index — sweepOrigin documents rows[i] as built from
-    /// cfg.thresholds[0..thresholdCount] in the same order, so index
+    /// Removes the threshold at `index` (as taken directly from
+    /// `ui/threshold.zig`'s "Existing Thresholds" list, which enumerates
+    /// `cfg.thresholds[0..cfg.thresholdCount]` via `for (..., 0..) |value,
+    /// t_idx|` and passes that same `t_idx` straight through — so index
     /// alignment holds without re-deriving it from the value). Enforces the
     /// minimum-1 rule (FR-8), persists the config, and marks the threshold
     /// cache stale. On any rejection, `self.config` is left untouched and

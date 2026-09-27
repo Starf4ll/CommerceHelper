@@ -29,22 +29,6 @@ pub const ThresholdCell = struct {
     ducats_per_min: f64,
 };
 
-/// The best-Ducats/min combination found for a single Threshold value.
-///
-/// Pre-Story-4.1 this was `sweepOrigin`'s real output shape (one collapsed
-/// winner per Threshold across every Good). It now exists purely as a
-/// compatibility bridge so `ui/threshold.zig` keeps compiling/rendering
-/// unchanged — see `OriginResult.rows`/`count` below. Story 4.2/4.3 deletes
-/// this type entirely once the new per-Good/per-Destination UI lands.
-pub const ThresholdRow = struct {
-    threshold: u32,
-    has_result: bool,
-    good_idx: usize,
-    transport_name: []const u8,
-    destination_idx: usize,
-    ducats_per_min: f64,
-};
-
 /// Per-Origin sweep result (Story 4.1).
 ///
 /// `cells[g][t][d]` holds the Good × Threshold × Destination combination for
@@ -61,14 +45,6 @@ pub const OriginResult = struct {
     cells: [MAX_GOODS][config_mod.MAX_THRESHOLDS][12]ThresholdCell,
     good_count: u8,
     threshold_count: u8,
-
-    // ── Compatibility bridge (temporary — see ThresholdRow's doc comment) ──
-    // Derived from `cells` at the end of `sweepOrigin`: for each Threshold,
-    // the single reachable cell (across every Good/Destination) with the
-    // highest Ducats/min, exactly mirroring the pre-Story-4.1 "one collapsed
-    // winner per Threshold" shape `ui/threshold.zig` still renders.
-    rows: [config_mod.MAX_THRESHOLDS]ThresholdRow,
-    count: u8,
 };
 
 const OwnedTransport = struct {
@@ -103,15 +79,6 @@ const zero_cell = ThresholdCell{
     .ducats_per_min = 0,
 };
 
-const zero_row = ThresholdRow{
-    .threshold = 0,
-    .has_result = false,
-    .good_idx = 0,
-    .transport_name = "",
-    .destination_idx = 0,
-    .ducats_per_min = 0,
-};
-
 /// Builds a fully-zeroed cell matrix (every cell `reachable = false`) —
 /// shared by `sweepOrigin`'s initial `result` and the test-only
 /// `sentinelResult()` so the nested array-repeat literal exists in exactly
@@ -122,12 +89,6 @@ fn zeroCells() [MAX_GOODS][config_mod.MAX_THRESHOLDS][12]ThresholdCell {
             [_]ThresholdCell{zero_cell} ** 12,
         } ** config_mod.MAX_THRESHOLDS,
     } ** MAX_GOODS;
-}
-
-/// Builds a fully-zeroed rows array (`has_result = false` throughout) — same
-/// de-duplication rationale as `zeroCells()` above.
-fn zeroRows() [config_mod.MAX_THRESHOLDS]ThresholdRow {
-    return [_]ThresholdRow{zero_row} ** config_mod.MAX_THRESHOLDS;
 }
 
 /// For each eligible Good (Merchant Rating <= player's rating at this Origin,
@@ -158,8 +119,6 @@ pub fn sweepOrigin(
         .cells = zeroCells(),
         .good_count = 0,
         .threshold_count = cfg.thresholdCount,
-        .rows = zeroRows(),
-        .count = cfg.thresholdCount,
     };
 
     var good_count: usize = 0;
@@ -243,37 +202,6 @@ pub fn sweepOrigin(
     }
 
     result.good_count = @intCast(good_count);
-
-    // ── Compatibility bridge derivation (see OriginResult.rows doc comment) ──
-    for (0..cfg.thresholdCount) |t_idx| {
-        var best = ThresholdRow{
-            .threshold = cfg.thresholds[t_idx],
-            .has_result = false,
-            .good_idx = 0,
-            .transport_name = "",
-            .destination_idx = 0,
-            .ducats_per_min = 0,
-        };
-
-        for (0..good_count) |g| {
-            for (0..12) |d| {
-                const cell = result.cells[g][t_idx][d];
-                if (!cell.reachable) continue;
-                if (!best.has_result or cell.ducats_per_min > best.ducats_per_min) {
-                    best = ThresholdRow{
-                        .threshold = cell.threshold,
-                        .has_result = true,
-                        .good_idx = cell.good_idx,
-                        .transport_name = cell.transport_name,
-                        .destination_idx = cell.destination_idx,
-                        .ducats_per_min = cell.ducats_per_min,
-                    };
-                }
-            }
-        }
-
-        result.rows[t_idx] = best;
-    }
 
     return result;
 }
@@ -398,46 +326,6 @@ test "sweepOrigin multi-good happy path: independent cells per Good, no collapse
     try std.testing.expect(cell_a.ducats_per_min != cell_b.ducats_per_min);
 }
 
-test "sweepOrigin compatibility bridge: rows/count mirror the single best reachable cell per Threshold" {
-    // Two Goods, one configured Threshold, one reachable Destination: GoodA
-    // (heavier, slower) and GoodB (lighter, faster) each get their own
-    // independent, reachable cell at threshold[0]/destination[1] — this
-    // test exercises the bridge's "pick the max across every Good/Destination
-    // for a given Threshold" rule by asserting the bridge row picks GoodB's
-    // strictly-higher ducats/min cell as threshold[0]'s winner.
-    const goods = [_]goods_mod.Good{
-        makeGood("GoodA", 20, 2, 1), // primaryQty = 14 (see multi-good happy path test)
-        makeGood("GoodB", 10, 5, 1), // primaryQty = 35 — strictly better ducats/min
-    };
-
-    var cfg = config_mod.Config{};
-    cfg.transports.wagon = true;
-    cfg.thresholds[0] = 100;
-    cfg.thresholdCount = 1;
-
-    var matrix = makeUniformMatrix(100_000, 0);
-    matrix.baseTimes[0][1] = 100;
-    matrix.baseTimes[1][0] = 100;
-
-    const result = sweepOrigin(&goods, cfg, 0, matrix);
-
-    try std.testing.expectEqual(@as(u8, 1), result.count);
-    const row = result.rows[0];
-    try std.testing.expect(row.has_result);
-    // GoodB (raw good_idx 1) has the higher ducats/min (3990.0 vs 1596.0) and
-    // must win the compatibility-bridge row, exactly mirroring the winning
-    // cell's own fields.
-    try std.testing.expectEqual(@as(usize, 1), row.good_idx);
-    try std.testing.expectEqual(@as(usize, 1), row.destination_idx);
-    try std.testing.expectEqualStrings("Wagon", row.transport_name);
-    try std.testing.expectApproxEqAbs(@as(f64, 3990.0), row.ducats_per_min, 0.01);
-
-    const winning_cell = result.cells[1][0][1];
-    try std.testing.expectEqual(winning_cell.good_idx, row.good_idx);
-    try std.testing.expectEqual(winning_cell.destination_idx, row.destination_idx);
-    try std.testing.expectApproxEqAbs(winning_cell.ducats_per_min, row.ducats_per_min, 0.0001);
-}
-
 test "sweepOrigin rating-excluded Good produces no cells at all" {
     const goods = [_]goods_mod.Good{
         makeGood("Eligible", 10, 5, 1),
@@ -485,12 +373,6 @@ test "sweepOrigin cell unreachable: no owned Transport can carry the Good" {
     try std.testing.expectEqual(@as(usize, 0), cell.good_idx);
     try std.testing.expectEqual(@as(u32, 100), cell.threshold);
     try std.testing.expectEqual(@as(usize, 1), cell.destination_idx);
-
-    // Every cell at threshold[0] is unreachable (only one Good, only one
-    // owned Transport, and it can't carry the Good to any Destination) — the
-    // compatibility bridge must reflect that with has_result=false, exactly
-    // as the pre-Story-4.1 shape did when nothing was found.
-    try std.testing.expect(!result.rows[0].has_result);
 }
 
 test "sweepOrigin cell unreachable: Destination has no usable route, sibling Destination unaffected" {
@@ -845,16 +727,11 @@ test "sweepOrigin tradersSkiff transport matches TRANSPORT_STATS" {
 /// A value real `sweepOrigin` output could never produce for the test configs
 /// below — used to detect whether updateCache left an existing slot untouched.
 fn sentinelResult() OriginResult {
-    var r = OriginResult{
+    return OriginResult{
         .cells = zeroCells(),
         .good_count = 200, // out of range for any real sweepOrigin call (max MAX_GOODS)
         .threshold_count = 0,
-        .rows = zeroRows(),
-        .count = 200, // out of range for any real sweepOrigin call (max 32)
     };
-    r.rows[0].threshold = 424242;
-    r.rows[0].ducats_per_min = 999999.0;
-    return r;
 }
 
 /// Destroys every non-null cache slot via `allocator` and nulls it — test
@@ -901,9 +778,7 @@ test "updateCache row 2: populated non-stale slot is returned as-is, not recompu
     // Slot untouched — sweepOrigin was never re-triggered for it.
     try std.testing.expect(cache[0] != null);
     try std.testing.expectEqual(sentinel_box, cache[0].?);
-    try std.testing.expectEqual(@as(u8, 200), cache[0].?.count);
-    try std.testing.expectEqual(@as(u32, 424242), cache[0].?.rows[0].threshold);
-    try std.testing.expectApproxEqAbs(@as(f64, 999999.0), cache[0].?.rows[0].ducats_per_min, 0.01);
+    try std.testing.expectEqual(@as(u8, 200), cache[0].?.good_count);
 
     // No other slot was ever populated.
     for (cache[1..]) |slot| try std.testing.expect(slot == null);
@@ -943,7 +818,7 @@ test "updateCache row 3: stale=true destroys and clears all 12 slots, recomputes
         if (i == 1) {
             try std.testing.expect(slot != null);
             // Recomputed via a real sweepOrigin call — not the sentinel.
-            try std.testing.expect(slot.?.count != 200);
+            try std.testing.expect(slot.?.good_count != 200);
         } else {
             try std.testing.expect(slot == null);
         }
@@ -963,14 +838,14 @@ test "updateCache row 5: cfg=null or empty origin returns without touching cache
     // cfg = null entirely.
     updateCache(&cache, &stale, null, null, null, allocator);
     try std.testing.expect(cache[0] != null);
-    try std.testing.expectEqual(@as(u8, 200), cache[0].?.count);
+    try std.testing.expectEqual(@as(u8, 200), cache[0].?.good_count);
     for (cache[1..]) |slot| try std.testing.expect(slot == null);
 
     // cfg present but origin == "" (pre-wizard).
     const cfg = config_mod.Config{}; // default origin is ""
     updateCache(&cache, &stale, cfg, null, null, allocator);
     try std.testing.expect(cache[0] != null);
-    try std.testing.expectEqual(@as(u8, 200), cache[0].?.count);
+    try std.testing.expectEqual(@as(u8, 200), cache[0].?.good_count);
     for (cache[1..]) |slot| try std.testing.expect(slot == null);
 
     try std.testing.expect(!stale);
@@ -993,7 +868,7 @@ test "updateCache goods_map missing (route_matrix present) returns without touch
 
     // No goods_map => early return before the cache slot lookup; untouched, no crash.
     try std.testing.expect(cache[0] != null);
-    try std.testing.expectEqual(@as(u8, 200), cache[0].?.count);
+    try std.testing.expectEqual(@as(u8, 200), cache[0].?.good_count);
     for (cache[1..]) |slot| try std.testing.expect(slot == null);
     try std.testing.expect(!stale);
 }
@@ -1019,7 +894,7 @@ test "updateCache route_matrix missing (goods_map present) returns without touch
 
     // No route_matrix => early return before the cache slot lookup; untouched, no crash.
     try std.testing.expect(cache[0] != null);
-    try std.testing.expectEqual(@as(u8, 200), cache[0].?.count);
+    try std.testing.expectEqual(@as(u8, 200), cache[0].?.good_count);
     for (cache[1..]) |slot| try std.testing.expect(slot == null);
     try std.testing.expect(!stale);
 }
