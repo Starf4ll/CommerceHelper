@@ -580,18 +580,18 @@ test "merchantRatingAt returns the field matching each outpost index (not a unif
         .vales = 120,
     };
 
-    try std.testing.expectEqual(@as(u8, 10), config_mod.merchantRatingAt(ratings, 0));
-    try std.testing.expectEqual(@as(u8, 20), config_mod.merchantRatingAt(ratings, 1));
-    try std.testing.expectEqual(@as(u8, 30), config_mod.merchantRatingAt(ratings, 2));
-    try std.testing.expectEqual(@as(u8, 40), config_mod.merchantRatingAt(ratings, 3));
-    try std.testing.expectEqual(@as(u8, 50), config_mod.merchantRatingAt(ratings, 4));
-    try std.testing.expectEqual(@as(u8, 60), config_mod.merchantRatingAt(ratings, 5));
-    try std.testing.expectEqual(@as(u8, 70), config_mod.merchantRatingAt(ratings, 6));
-    try std.testing.expectEqual(@as(u8, 80), config_mod.merchantRatingAt(ratings, 7));
-    try std.testing.expectEqual(@as(u8, 90), config_mod.merchantRatingAt(ratings, 8));
-    try std.testing.expectEqual(@as(u8, 100), config_mod.merchantRatingAt(ratings, 9));
-    try std.testing.expectEqual(@as(u8, 110), config_mod.merchantRatingAt(ratings, 10));
-    try std.testing.expectEqual(@as(u8, 120), config_mod.merchantRatingAt(ratings, 11));
+    try std.testing.expectEqual(@as(u8, 10), config_mod.merchantRatingAt(ratings, 0)); // tirChonaill
+    try std.testing.expectEqual(@as(u8, 20), config_mod.merchantRatingAt(ratings, 1)); // dunbarton
+    try std.testing.expectEqual(@as(u8, 30), config_mod.merchantRatingAt(ratings, 2)); // bangor
+    try std.testing.expectEqual(@as(u8, 60), config_mod.merchantRatingAt(ratings, 3)); // emainMacha
+    try std.testing.expectEqual(@as(u8, 70), config_mod.merchantRatingAt(ratings, 4)); // taillteann
+    try std.testing.expectEqual(@as(u8, 50), config_mod.merchantRatingAt(ratings, 5)); // tara
+    try std.testing.expectEqual(@as(u8, 40), config_mod.merchantRatingAt(ratings, 6)); // cobh
+    try std.testing.expectEqual(@as(u8, 80), config_mod.merchantRatingAt(ratings, 7)); // belvast
+    try std.testing.expectEqual(@as(u8, 90), config_mod.merchantRatingAt(ratings, 8)); // qilla
+    try std.testing.expectEqual(@as(u8, 110), config_mod.merchantRatingAt(ratings, 9)); // filia
+    try std.testing.expectEqual(@as(u8, 100), config_mod.merchantRatingAt(ratings, 10)); // cor
+    try std.testing.expectEqual(@as(u8, 120), config_mod.merchantRatingAt(ratings, 11)); // vales
 }
 
 // ── Transport coverage (Story 2.4 Matrix Test Audit gap — row 5) ─────────────

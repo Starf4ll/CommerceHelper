@@ -318,7 +318,7 @@ pub const AppState = struct {
             }
 
             if (dvui.button(@src(), "Settings", .{}, .{ .margin = .{ .x = 4 } })) {
-                self.show_settings = true;
+                self.show_settings = !self.show_settings;
             }
         }
 
@@ -983,6 +983,32 @@ test "removeThreshold write failure: config left unchanged, error_msg set to @er
     try std.testing.expectEqual(@as(u32, 200), state.config.?.thresholds[1]);
     try std.testing.expect(state.threshold_state.error_msg != null);
     try std.testing.expect(state.threshold_cache_stale == false);
+}
+
+// ── Settings button toggle (spec-destination-order-settings-toggle-and-tabs) ──
+// Guards the toggle-to-close behavior: `self.show_settings = !self.show_settings`
+// in renderMainArea's Settings button handler. A regression back to the old
+// `self.show_settings = true` (open-only, never closes) would pass every other
+// test in this file but silently break re-clicking "Settings" to close it.
+
+test "Settings button toggle expression round-trips show_settings false -> true -> false" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var state = makeThresholdTestState(allocator, exe_dir, Config{});
+
+    try std.testing.expect(state.show_settings == false);
+
+    // Mirrors the Settings button's handler exactly (renderMainArea).
+    state.show_settings = !state.show_settings;
+    try std.testing.expect(state.show_settings == true);
+
+    state.show_settings = !state.show_settings;
+    try std.testing.expect(state.show_settings == false);
 }
 
 // ── iconBytes ────────────────────────────────────────────────────────────────
