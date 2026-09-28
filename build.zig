@@ -234,4 +234,17 @@ pub fn build(b: *std.Build) void {
     app_tests.root_module.addImport("../engine/live.zig", engine_live_mod);
     const run_app_tests = b.addRunArtifact(app_tests);
     test_step.dependOn(&run_app_tests.step);
+
+    // `zig build test` — run the render loop's idle-wait micros→ms conversion
+    // unit tests. Extracted from main.zig into its own dependency-free module
+    // because main.zig itself has no test target: it imports "dvui" and
+    // "dx11-backend" and links d3d11/dxgi/dxguid, so testing it would require
+    // duplicating the exe target's full DirectX link setup for a test binary.
+    const idle_wait_tests = b.addTest(.{
+        .root_source_file = b.path("src/util/idle_wait.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_idle_wait_tests = b.addRunArtifact(idle_wait_tests);
+    test_step.dependOn(&run_idle_wait_tests.step);
 }
