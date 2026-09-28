@@ -47,7 +47,7 @@ pub fn main() !void {
 
     // Initialise application state — runs the startup data loading sequence.
     var app_state = app_mod.AppState.init(gpa, exe_dir);
-    defer app_state.deinit();
+    defer app_state.deinit(backend.backend());
 
     while (true) switch (Backend.serviceMessageQueue()) {
         .queue_empty => {

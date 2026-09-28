@@ -72,6 +72,24 @@ pub const AppState = struct {
     // disk at most once per path — see iconBytes()/Design Notes for why.
     icon_cache: std.StringHashMap([]const u8),
 
+    // ── Icon texture cache (icon-texture-caching-performance-fix) ─────────────
+    // Keyed by the same Good.image path as icon_cache. Values are dvui GPU
+    // texture handles decoded once via Texture.fromImageFile — reused as
+    // ImageSource.texture (hash() always 0, no per-frame stbi_info_from_memory
+    // decode) at every dvui.image() call site. Destroyed in deinit() via the
+    // raw Backend.textureDestroy (not textureDestroyLater, which needs an
+    // active Window.begin/end that no longer exists by shutdown).
+    icon_textures: std.StringHashMap(dvui.Texture),
+
+    // Keyed the same way, but tracks paths whose bytes decoded (stbi) with an
+    // error — a corrupt or non-image file at a Good's `image` path. Without
+    // this, iconTexture() would re-attempt the same failing decode on every
+    // single frame (the map miss never resolves), reintroducing the exact
+    // per-frame decode cost this whole cache exists to eliminate, just on the
+    // failure path instead of the success path. No values to free in
+    // deinit() — it's a plain marker set.
+    icon_decode_failed: std.StringHashMap(void),
+
     pub fn init(allocator: std.mem.Allocator, exe_dir: []const u8) AppState {
         var state = AppState{
             .allocator = allocator,
@@ -83,12 +101,14 @@ pub const AppState = struct {
             .needs_wizard = false,
             .load_error = null,
             .icon_cache = std.StringHashMap([]const u8).init(allocator),
+            .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+            .icon_decode_failed = std.StringHashMap(void).init(allocator),
         };
         state.runStartupSequence();
         return state;
     }
 
-    pub fn deinit(self: *AppState) void {
+    pub fn deinit(self: *AppState, backend: ?dvui.Backend) void {
         if (self.goods) |*m| {
             goods_mod.deinitGoodsMap(m, self.allocator);
         }
@@ -113,6 +133,21 @@ pub const AppState = struct {
             self.allocator.free(bytes.*);
         }
         self.icon_cache.deinit();
+
+        // Cached GPU textures have no lifetime tied to Window.begin/end at
+        // this point (the frame loop has already ended) — destroy each one
+        // via the raw backend handle when we have one (real shutdown). Test
+        // call sites that never render icons pass null; icon_textures is then
+        // empty and this loop is a no-op.
+        if (backend) |b| {
+            var texture_it = self.icon_textures.valueIterator();
+            while (texture_it.next()) |tex| {
+                b.textureDestroy(tex.*);
+            }
+        }
+        self.icon_textures.deinit();
+        // Plain marker set — no values to free, just tear down the map.
+        self.icon_decode_failed.deinit();
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -202,13 +237,13 @@ pub const AppState = struct {
 
     /// Returns the bytes of the icon file at `exe_dir/image_path`, reading
     /// from disk at most once per path and caching the result with a stable
-    /// pointer. Returns null (never crashes) if the file can't be read — the
-    /// caller falls back to name-only rendering.
+    /// pointer. Returns null (never crashes) if the file can't be read.
     ///
-    /// The cache exists because dvui's `ImageSource.imageFile` defaults to
-    /// `invalidation = .ptr`: it keys its texture cache off `bytes.ptr`, so
-    /// re-reading the file fresh every frame would hand it a new pointer each
-    /// time and force a GPU texture rebuild every frame.
+    /// Internal input to `iconTexture()`'s one-time `Texture.fromImageFile`
+    /// decode — no render call site reads these bytes directly anymore (all
+    /// 3 go through `iconTexture()`/`ImageSource.texture`). The cache still
+    /// exists so that decode happens at most once per path rather than
+    /// re-reading the file from disk on every cache-miss call.
     pub fn iconBytes(self: *AppState, image_path: []const u8) ?[]const u8 {
         if (self.icon_cache.get(image_path)) |cached| return cached;
 
@@ -221,6 +256,47 @@ pub const AppState = struct {
             return null;
         };
         return bytes;
+    }
+
+    /// Returns a cached GPU texture handle for the icon at `image_path`,
+    /// decoding it at most once per path via `iconBytes()` + `Texture.
+    /// fromImageFile`. Returns null (never crashes) if the bytes can't be
+    /// read *or* the decode fails (e.g. a corrupt or non-image file at that
+    /// path) — either way the caller falls back to name-only rendering.
+    ///
+    /// The cache exists because `ImageSource.hash()` unconditionally calls
+    /// `imageSize()` for `.imageFile` sources, which invokes
+    /// `stbi_info_from_memory` (a real PNG-header decode) on every single
+    /// frame regardless of `iconBytes()`'s own raw-bytes cache. Handing back
+    /// a `dvui.Texture` lets call sites use `ImageSource.texture` instead,
+    /// whose `hash()` always returns 0 and skips both the decode and dvui's
+    /// own texture cache entirely. Only valid to call between `Window.begin`
+    /// and `Window.end` (true for every current caller — all 3 render inside
+    /// `render()`).
+    ///
+    /// A decode failure is remembered in `icon_decode_failed` so a bad path
+    /// short-circuits to null on every later call instead of re-attempting
+    /// the same failing decode every frame — otherwise a single corrupt icon
+    /// file would reintroduce the exact per-frame decode cost this cache
+    /// exists to eliminate, just on the failure path instead of the success
+    /// path. A `icon_textures.put` failure *after* a successful decode
+    /// destroys the just-created texture via `textureDestroyLater` (valid
+    /// here — always called between `Window.begin`/`end`) rather than
+    /// handing back a texture this struct can never track and destroy.
+    pub fn iconTexture(self: *AppState, image_path: []const u8) ?dvui.Texture {
+        if (self.icon_textures.get(image_path)) |cached| return cached;
+        if (self.icon_decode_failed.contains(image_path)) return null;
+
+        const bytes = self.iconBytes(image_path) orelse return null;
+        const tex = dvui.Texture.fromImageFile(image_path, bytes, .linear) catch {
+            self.icon_decode_failed.put(image_path, {}) catch {};
+            return null;
+        };
+        self.icon_textures.put(image_path, tex) catch {
+            dvui.textureDestroyLater(tex);
+            return null;
+        };
+        return tex;
     }
 
     /// Called once per frame from main.zig inside win.begin/end.
@@ -705,6 +781,8 @@ test "saveRoutes success: writes to disk, rebuilds route_matrix, marks threshold
         .load_error = null,
         .threshold_cache_stale = false,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
     state.saveRoutes(before);
@@ -743,6 +821,8 @@ test "saveRoutes no-op: unchanged RouteData triggers no write and no rebuild" {
         .load_error = null,
         .threshold_cache_stale = false,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
     state.saveRoutes(routes); // before == current: nothing changed this frame
@@ -788,6 +868,8 @@ test "saveRoutes failure: write error reverts routes and sets write_error, leave
         .load_error = null,
         .threshold_cache_stale = false,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
     state.saveRoutes(before);
@@ -821,6 +903,8 @@ fn makeThresholdTestState(allocator: std.mem.Allocator, exe_dir: []const u8, cfg
         .load_error = null,
         .threshold_cache_stale = false,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 }
 
@@ -1178,18 +1262,20 @@ test "iconBytes: reads and caches a file with a stable pointer; missing file ret
         .needs_wizard = false,
         .load_error = null,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
     // goods/config/routes/load_error are all null here, so deinit() is safe
     // to call directly — this also exercises AppState.deinit()'s icon-cache
     // free loop, which no other test in this file reaches.
-    defer state.deinit();
+    defer state.deinit(null);
 
     const first = state.iconBytes("static/img/good/test.png").?;
     try std.testing.expectEqualStrings("fake-icon-bytes", first);
 
     // Second call must hit the cache and return the exact same pointer —
-    // dvui's texture cache keys off bytes.ptr (ImageSource default .ptr
-    // invalidation), so a changed pointer would thrash it every frame.
+    // a stable pointer per path is the whole reason this cache exists,
+    // since iconTexture() decodes these bytes at most once per path.
     const second = state.iconBytes("static/img/good/test.png").?;
     try std.testing.expect(first.ptr == second.ptr);
 
@@ -1367,6 +1453,8 @@ test "calculateLive happy path: populates live_results via the real AppState ent
         .load_error = null,
         .threshold_cache_stale = false,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
     state.live_state.profits[0][0][1] = 50.0; // Origin 0 (tirChonaill), TestGood @ dunbarton: 50 Ducats/unit
@@ -1480,6 +1568,8 @@ test "saveLiveProfits success: writes to disk, clears write_error" {
         .needs_wizard = false,
         .load_error = null,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
     const before = state.live_state.profits[0]; // all-zero snapshot
@@ -1524,6 +1614,8 @@ test "saveLiveProfits rounds a fractional profit and saturates an out-of-u16-ran
         .needs_wizard = false,
         .load_error = null,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
     const before = state.live_state.profits[0]; // all-zero snapshot
@@ -1573,6 +1665,8 @@ test "saveLiveProfits no-op: unchanged slice triggers no write" {
         .needs_wizard = false,
         .load_error = null,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
     const before = state.live_state.profits[0]; // identical to current — before == current
@@ -1617,6 +1711,8 @@ test "saveLiveProfits failure: write error reverts the Origin's slice and sets w
         .needs_wizard = false,
         .load_error = null,
         .icon_cache = std.StringHashMap([]const u8).init(allocator),
+        .icon_textures = std.StringHashMap(dvui.Texture).init(allocator),
+        .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
     const before = state.live_state.profits[0]; // all-zero snapshot
@@ -1670,7 +1766,7 @@ test "AppState.init loads live_profits.json and populates live_state.profits (St
     // No config.json — needs_wizard is expected true; live_profits loading
     // must not depend on config having loaded (it runs before step 3).
     var state = AppState.init(allocator, exe_dir);
-    defer state.deinit();
+    defer state.deinit(null);
 
     try std.testing.expect(state.load_error == null); // routes/goods both loaded
     try std.testing.expectEqual(@as(f32, 77.0), state.live_state.profits[0][0][1]);
@@ -1719,7 +1815,7 @@ test "AppState.deinit() frees a real threshold_cache pointer created via update(
     try config_mod.writeConfig(cfg, allocator, exe_dir);
 
     var state = AppState.init(allocator, exe_dir);
-    defer state.deinit();
+    defer state.deinit(null);
 
     try std.testing.expect(state.load_error == null);
     try std.testing.expect(!state.needs_wizard);
