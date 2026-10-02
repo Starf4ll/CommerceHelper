@@ -37,7 +37,7 @@ pub fn main() !void {
         .registered_class = window_class,
         .dvui_gpa = gpa,
         .allocator = gpa,
-        .size = .{ .w = 1050.0, .h = 600.0 },
+        .size = .{ .w = 1080.0, .h = 600.0 },
         .min_size = .{ .w = 600.0, .h = 300.0 },
         .vsync = true,
         .title = "CommerceHelper",
