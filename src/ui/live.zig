@@ -165,7 +165,7 @@ fn goodCell(good: Good, id_extra: usize, app_state: *AppState) void {
     var wd: dvui.WidgetData = undefined;
     var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .gravity_y = 0.5,
-        .min_size_content = .{ .w = 170 },
+        .min_size_content = .{ .w = 210 },
         .id_extra = id_extra,
         .data_out = &wd,
     });
@@ -212,7 +212,7 @@ fn loadCompositionCell(load: engine_live.LoadComposition, origin_goods: []const 
     var wd: dvui.WidgetData = undefined;
     var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .gravity_y = 0.5,
-        .min_size_content = .{ .w = 220 },
+        .min_size_content = .{ .w = 210 },
         .id_extra = row_idx,
         .data_out = &wd,
     });
@@ -410,10 +410,10 @@ pub fn renderTab(app_state: *AppState) !void {
         defer header.deinit();
 
         dvui.label(@src(), "Rank", .{}, .{ .min_size_content = .{ .w = 40 } });
-        dvui.label(@src(), "Good", .{}, .{ .min_size_content = .{ .w = 170 } });
+        dvui.label(@src(), "Good", .{}, .{ .min_size_content = .{ .w = 200 } });
         dvui.label(@src(), "Transport", .{}, .{ .min_size_content = .{ .w = 100 } });
         dvui.label(@src(), "Destination", .{}, .{ .min_size_content = .{ .w = 100 } });
-        dvui.label(@src(), "Load", .{}, .{ .min_size_content = .{ .w = 220 } });
+        dvui.label(@src(), "Load", .{}, .{ .min_size_content = .{ .w = 240 } });
         dvui.label(@src(), "Total Profit", .{}, .{ .min_size_content = .{ .w = 100 } });
         dvui.label(@src(), "Travel Time", .{}, .{ .min_size_content = .{ .w = 100 } });
         dvui.label(@src(), "Ducats/min", .{}, .{ .min_size_content = .{ .w = 100 } });
