@@ -142,6 +142,35 @@ pub fn build(b: *std.Build) void {
     const run_routes_tests = b.addRunArtifact(routes_tests);
     test_step.dependOn(&run_routes_tests.step);
 
+    // `zig build test` — run goods data-layer unit tests. goods.zig was
+    // previously only ever reached as a named cross-directory import
+    // ("../data/goods.zig") from other test roots (optimizer_tests, etc.) —
+    // such named-module imports are a separate package boundary, so their
+    // own `test` blocks are never swept into the importing root's test
+    // binary. Without its own root here, goods.zig's tests silently never
+    // ran under `zig build test` despite compiling cleanly (review finding).
+    const goods_tests = b.addTest(.{
+        .root_source_file = b.path("src/data/goods.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    goods_tests.root_module.addImport("embedded_assets", test_embedded_assets_mod);
+    const run_goods_tests = b.addRunArtifact(goods_tests);
+    test_step.dependOn(&run_goods_tests.step);
+
+    // `zig build test` — run config data-layer unit tests. Same gap as
+    // goods.zig immediately above: config.zig was previously only ever
+    // reached as a named cross-directory import ("../data/config.zig"),
+    // so its own `test` blocks never ran under `zig build test` either
+    // (review finding).
+    const config_tests = b.addTest(.{
+        .root_source_file = b.path("src/data/config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_config_tests = b.addRunArtifact(config_tests);
+    test_step.dependOn(&run_config_tests.step);
+
     // `zig build test` — run live_profits data-layer unit tests (Story 3.4).
     // No embedded_assets import needed — unlike routes.zig/goods.zig, this
     // file has no shipped default and is absent until the first save.
@@ -185,7 +214,10 @@ pub fn build(b: *std.Build) void {
     // (incompatible) RouteMatrix types.
     const engine_matrix_mod = b.createModule(.{
         .root_source_file = b.path("src/engine/matrix.zig"),
-        .imports = &.{.{ .name = "../data/routes.zig", .module = routes_mod }},
+        .imports = &.{
+            .{ .name = "../data/routes.zig", .module = routes_mod },
+            .{ .name = "../data/config.zig", .module = config_mod },
+        },
     });
     // engine/optimizer.zig is reached the same way, both by engine/threshold.zig
     // and (below) by engine/live.zig's own sibling import ("optimizer.zig") —

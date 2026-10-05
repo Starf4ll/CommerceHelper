@@ -2,15 +2,33 @@ const std = @import("std");
 const config = @import("../data/config.zig");
 const goods_mod = @import("../data/goods.zig");
 
+/// Per-modifier weight-capacity bonus (Commerce Partner / Grandmaster Title),
+/// in the same units as Transport.weightCapacity.
+const MODIFIER_WEIGHT_BONUS: u32 = 100;
+
+const EffectiveCapacity = struct {
+    cap: u32,
+    slots: u32,
+};
+
+/// A transport's capacity and slot count after applying active +1 bonuses
+/// (modifier_count: 0, 1, or 2 — Commerce Partner and/or Grandmaster Title).
+/// Shared by primaryQty and mixedLoadFill so the two stay in sync.
+fn effectiveCapacity(transport: config.Transport, modifier_count: u2) EffectiveCapacity {
+    std.debug.assert(modifier_count <= 2);
+    return .{
+        .cap = transport.weightCapacity + @as(u32, modifier_count) * MODIFIER_WEIGHT_BONUS,
+        .slots = transport.slotCount + @as(u32, modifier_count),
+    };
+}
+
 /// Returns the maximum number of units of a good a transport can carry,
 /// accounting for active modifiers (commerce partner and/or grandmaster title).
 /// modifier_count: 0, 1, or 2 — total count of active +1 bonuses.
 pub fn primaryQty(weight: u32, qty_per_slot: u32, transport: config.Transport, modifier_count: u2) u32 {
     std.debug.assert(weight > 0);
-    std.debug.assert(modifier_count <= 2);
-    const effective_cap = transport.weightCapacity + @as(u32, modifier_count) * 100;
-    const effective_slots = transport.slotCount + @as(u32, modifier_count);
-    return @min(effective_cap / weight, effective_slots * qty_per_slot);
+    const effective = effectiveCapacity(transport, modifier_count);
+    return @min(effective.cap / weight, effective.slots * qty_per_slot);
 }
 
 /// Returns the combined discount percent (integer) from merchant rating tier
@@ -55,17 +73,15 @@ pub fn mixedLoadFill(
     profits: []const u32,
     out: []FillEntry,
 ) usize {
-    std.debug.assert(modifier_count <= 2);
-    const effective_cap = transport.weightCapacity + @as(u32, modifier_count) * 100;
-    const effective_slots = transport.slotCount + @as(u32, modifier_count);
+    const effective = effectiveCapacity(transport, modifier_count);
 
     const primary_good = &goods[primary_idx];
     std.debug.assert(primary_good.quantityPerSlot > 0);
     const primary_slots_used = (primary_qty + primary_good.quantityPerSlot - 1) / primary_good.quantityPerSlot;
 
-    std.debug.assert(primary_qty * primary_good.weight <= effective_cap);
-    var remaining_weight: u32 = effective_cap - primary_qty * primary_good.weight;
-    var remaining_slots: u32 = effective_slots - primary_slots_used;
+    std.debug.assert(primary_qty * primary_good.weight <= effective.cap);
+    var remaining_weight: u32 = effective.cap - primary_qty * primary_good.weight;
+    var remaining_slots: u32 = effective.slots - primary_slots_used;
 
     // Build a local index array of candidates (stack-allocated; 64 > any realistic goods count).
     var candidate_buf: [64]usize = undefined;
@@ -227,14 +243,11 @@ test "mixedLoadFill no remaining capacity → returns 0" {
 }
 
 test "mixedLoadFill single secondary fits exactly" {
-    // remaining_weight=200, remaining_slots=2; good A: profit=50, weight=100, qtyPerSlot=1
-    // Primary is a dummy at index 0 using 0 weight and 5 slots of a synthetic transport.
-    // Use a custom transport: cap=200, slots=7, speed=1.0; primary: weight=0 qty_per_slot=5, qty=0.
-    // Actually: primary_qty=0 means primary_slots_used=0. remaining_weight=200, remaining_slots=7.
-    // We need remaining_slots=2 and remaining_weight=200. Use cap=200 slots=2.
+    // Primary (index 0, weight=1, qty=0) contributes 0 weight/slots used, so
+    // the transport's full capacity is available to the secondary: cap=200,
+    // slots=2 → remaining_weight=200, remaining_slots=2.
+    // Good A: profit=50, weight=100, qtyPerSlot=1.
     const transport = config.Transport{ .weightCapacity = 200, .slotCount = 2, .speedFactor = 1.0 };
-    // Primary at index 0: weight=0 → but weight must be > 0 for primaryQty; use weight=1, qty=0.
-    // primary_qty=0, primary_slots_used=ceil(0/1)=0. remaining_weight=200, remaining_slots=2.
     const goods = [_]goods_mod.Good{
         makeGood("Primary", 1, 1), // index 0, primary
         makeGood("A", 100, 1),     // index 1, secondary
@@ -352,14 +365,11 @@ test "mixedLoadFill acceptance: two candidates A and B" {
 
 test "mixedLoadFill modifier_count > 0 expands effective capacity" {
     // Wagon: cap=900, slots=7. With modifier_count=1: effectiveCap=1000, effectiveSlots=8.
-    // Primary: weight=100, qtyPerSlot=1, qty=9 (fills 900 weight, 9 slots on effective).
-    // remaining_weight = 1000 - 900 = 100; remaining_slots = 8 - 9 = ...
-    // Wait, 9 slots > effectiveSlots=8 would underflow. Use qty=8 instead:
-    // primary_qty=8: weight_used=800, slots_used=8. remaining_weight=200, remaining_slots=0.
-    // Still no secondary fits (remaining_slots=0). Let's use qty=7:
-    // weight_used=700, slots_used=7. remaining_weight=300, remaining_slots=1.
-    // Secondary B: weight=100, qtyPerSlot=1, profit=30.
-    // qty = min(1*1, 300/100) = min(1,3) = 1; slot-round: 1. Writes [{B,1}].
+    // Primary: weight=100, qtyPerSlot=1, qty=7 → weight_used=700, slots_used=7.
+    // remaining_weight=300, remaining_slots=1 (only reachable because the +1
+    // modifier expanded slots from 7 to 8 — at modifier_count=0 this primary
+    // qty would already exhaust all 7 slots, leaving no room for a secondary).
+    // Secondary B: weight=100, qtyPerSlot=1, profit=30 → qty=min(1*1, 300/100)=1.
     const transport = config.Transport{ .weightCapacity = 900, .slotCount = 7, .speedFactor = 1.0 };
     const goods = [_]goods_mod.Good{
         makeGood("Primary", 100, 1), // index 0
@@ -367,9 +377,6 @@ test "mixedLoadFill modifier_count > 0 expands effective capacity" {
     };
     const profits = [_]u32{ 0, 30 };
     var out: [8]FillEntry = undefined;
-    // With modifier_count=1: effectiveCap=1000, effectiveSlots=8
-    // primary_qty=7: weight_used=700, slots_used=7. remaining=300 weight, 1 slot.
-    // B: qty=min(1, 3)=1. Writes [{B,1}].
     const count = mixedLoadFill(&goods, 0, 7, transport, 1, &profits, &out);
     try std.testing.expectEqual(@as(usize, 1), count);
     try std.testing.expectEqual(@as(usize, 1), out[0].good_idx);

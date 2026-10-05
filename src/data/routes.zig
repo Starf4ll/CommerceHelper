@@ -220,3 +220,12 @@ test "writeRoutes + loadRoutes round-trips a modified RouteData" {
 
     try std.testing.expect(std.meta.eql(routes, loaded));
 }
+
+test "DEFAULT_ROUTES_JSON (the embedded Restore Defaults fallback) parses successfully" {
+    // restoreRoutes() writes this verbatim; retryAfterRestore() then reloads
+    // it through this exact parseRoutes() path. If the embedded asset ever
+    // drifted out of shape (wrong @embedFile target, a hand-edit that broke
+    // its JSON shape), "Restore Defaults" would silently fail to recover —
+    // this guards that the one in-app recovery mechanism actually works.
+    _ = try parseRoutes(std.testing.allocator, DEFAULT_ROUTES_JSON);
+}

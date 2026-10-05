@@ -96,6 +96,7 @@ pub fn bestCellInGood(
     slot: *const threshold_mod.OriginResult,
     good_slot: usize,
 ) ?BestCellIndices {
+    std.debug.assert(good_slot < slot.good_count);
     var best: ?BestCellIndices = null;
     var best_ducats_per_min: f64 = 0;
 
@@ -361,17 +362,19 @@ fn renderGoodContent(
         var label_buf: [32]u8 = undefined;
         const label = std.fmt.bufPrint(&label_buf, "Threshold: {d}", .{cfg.thresholds[t_idx]}) catch "Threshold";
 
-        // `id_extra` combines `good_slot` with `t_idx`: dvui persists a
-        // expander's expand/collapse state by id across frames, so without
-        // good_slot two different Goods' same-valued Threshold sections
-        // (e.g. both showing "Threshold: 50") would share one expand state
-        // and leak it across tabs. good_slot is bounded well under
-        // MAX_GOODS=8 and t_idx well under MAX_THRESHOLDS=32, so this plain
-        // usize multiply/add never overflows or collides.
+        // `id_extra` combines `origin_idx`, `good_slot`, and `t_idx`: dvui
+        // persists an expander's expand/collapse state by id across frames,
+        // so without all three, two different Goods' (or two different
+        // Origins') same-valued Threshold sections (e.g. both showing
+        // "Threshold: 50") would share one expand state and leak it across
+        // tabs or Origin switches. good_slot is bounded well under
+        // MAX_GOODS=8, t_idx well under MAX_THRESHOLDS=32, and origin_idx
+        // under 12, so this plain usize multiply/add never overflows or
+        // collides.
         const expanded = dvui.expander(@src(), label, .{ .default_expanded = false }, .{
             .expand = .horizontal,
             .margin = .{ .x = 16, .y = 2 },
-            .id_extra = good_slot * 100 + t_idx,
+            .id_extra = origin_idx * 10_000 + good_slot * 100 + t_idx,
         });
         if (!expanded) continue;
 

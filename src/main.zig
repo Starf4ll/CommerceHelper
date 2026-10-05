@@ -18,13 +18,16 @@ pub fn main() !void {
 
     const gpa = gpa_instance.allocator();
 
+    // Attach console on Windows so debug output is visible. Done first,
+    // before anything else that can fail (selfExeDirPathAlloc, RegisterClass,
+    // initWindow) — a startup failure's printed error/stack trace would
+    // otherwise be invisible to the user on a GUI app with no console yet.
+    dvui.Backend.Common.windowsAttachConsole() catch {};
+
     // Resolve the executable directory so all data files are loaded relative
     // to the exe, not the current working directory.
     const exe_dir = try std.fs.selfExeDirPathAlloc(gpa);
     defer gpa.free(exe_dir);
-
-    // Attach console on Windows so debug output is visible
-    dvui.Backend.Common.windowsAttachConsole() catch {};
 
     Backend.RegisterClass(window_class, .{}) catch win32.panicWin32(
         "RegisterClass",
@@ -73,6 +76,11 @@ pub fn main() !void {
         .quit => break,
         .close_windows => {
             if (backend.receivedClose()) break;
+            // Not yet confirmed — back off briefly instead of busy-spinning
+            // this switch/serviceMessageQueue loop at full CPU while waiting
+            // for the close to complete, mirroring waitEventTimeout's own
+            // backoff on its failure path.
+            std.Thread.sleep(1 * std.time.ns_per_ms);
         },
     };
 }

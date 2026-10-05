@@ -98,6 +98,16 @@ fn percentRow(
     );
 }
 
+/// Returns true if at least one Transport checkbox is enabled. Mirrors
+/// onboarding.zig's identical check on WizardState — Settings must enforce
+/// the same "at least one transport" invariant that onboarding's Confirm
+/// gate and loadConfig's own load-time validation already enforce, or a
+/// zero-transport Config saved here would fail to reload on next launch.
+fn anyTransportSelected(t: config_mod.TransportFlags) bool {
+    return t.backpack or t.handcart or t.wagon or t.packElephant or
+        t.alpaca or t.dogSled or t.camel or t.tradersSkiff;
+}
+
 /// Compare two Config values — returns true if any value-type field differs.
 /// `origin` is excluded: it is not editable in Settings (Story 1.5 handles it).
 fn valueFieldsChanged(a: Config, b: Config) bool {
@@ -477,12 +487,17 @@ pub fn render(state: *SettingsState, app_state: *AppState) !void {
     const cfg = app_state.config.?;
     if (valueFieldsChanged(before, cfg)) {
         var write_ok = true;
-        config_mod.writeConfig(cfg, app_state.allocator, app_state.exe_dir) catch |err| {
+        if (!anyTransportSelected(cfg.transports)) {
             write_ok = false;
-            state.write_error = @errorName(err);
+            state.write_error = "At least one transport is required";
             app_state.config.? = before; // revert in-frame mutations
-        };
-        app_state.engine_dirty = true;
+        } else {
+            config_mod.writeConfig(cfg, app_state.allocator, app_state.exe_dir) catch |err| {
+                write_ok = false;
+                state.write_error = @errorName(err);
+                app_state.config.? = before; // revert in-frame mutations
+            };
+        }
         app_state.threshold_cache_stale = true;
         // Only clear the shared write_error on this block's own write success —
         // otherwise this would clobber an error this same block just set above,
@@ -512,4 +527,70 @@ pub fn render(state: *SettingsState, app_state: *AppState) !void {
             app_state.show_settings = false;
         }
     }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+test "valueFieldsChanged: identical Configs → false" {
+    const a = Config{};
+    const b = Config{};
+    try std.testing.expect(!valueFieldsChanged(a, b));
+}
+
+test "valueFieldsChanged: transports differ → true" {
+    const a = Config{};
+    var b = Config{};
+    b.transports.wagon = true;
+    try std.testing.expect(valueFieldsChanged(a, b));
+}
+
+test "valueFieldsChanged: commercePartner differs → true" {
+    const a = Config{};
+    var b = Config{};
+    b.commercePartner = true;
+    try std.testing.expect(valueFieldsChanged(a, b));
+}
+
+test "valueFieldsChanged: grandmasterTitle differs → true" {
+    const a = Config{};
+    var b = Config{};
+    b.grandmasterTitle = true;
+    try std.testing.expect(valueFieldsChanged(a, b));
+}
+
+test "valueFieldsChanged: merchantRatings differs → true" {
+    const a = Config{};
+    var b = Config{};
+    b.merchantRatings.bangor = 5;
+    try std.testing.expect(valueFieldsChanged(a, b));
+}
+
+test "valueFieldsChanged: speedBonus differs → true" {
+    const a = Config{};
+    var b = Config{};
+    b.speedBonus = 10;
+    try std.testing.expect(valueFieldsChanged(a, b));
+}
+
+test "valueFieldsChanged: gearDiscount differs → true" {
+    const a = Config{};
+    var b = Config{};
+    b.gearDiscount = 5;
+    try std.testing.expect(valueFieldsChanged(a, b));
+}
+
+test "valueFieldsChanged: origin differs → false (excluded by design)" {
+    const a = Config{};
+    var b = Config{};
+    b.origin = "dunbarton";
+    try std.testing.expect(!valueFieldsChanged(a, b));
+}
+
+test "anyTransportSelected: all false → false" {
+    try std.testing.expect(!anyTransportSelected(.{}));
+}
+
+test "anyTransportSelected: any one true → true" {
+    try std.testing.expect(anyTransportSelected(.{ .backpack = true }));
+    try std.testing.expect(anyTransportSelected(.{ .tradersSkiff = true }));
 }

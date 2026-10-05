@@ -252,7 +252,10 @@ pub fn render(state: *WizardState, app_state: *AppState) !void {
         if (can_confirm) {
             if (dvui.button(@src(), "Confirm", .{}, .{})) {
                 // Build Config from wizard state.
-                const origin = try app_state.allocator.dupe(u8, "");
+                const origin = app_state.allocator.dupe(u8, "") catch |err| {
+                    state.write_error = @errorName(err);
+                    return;
+                };
                 const config = config_mod.Config{
                     .origin = origin,
                     .transports = .{
@@ -326,4 +329,26 @@ pub fn render(state: *WizardState, app_state: *AppState) !void {
             }
         }
     }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+// Only `anyTransportSelected` is pure and directly testable here — the rest
+// of the Confirm button's `can_confirm` gate (all_ratings_valid) is
+// accumulated inline during ratingRow's dvui-coupled rendering, matching
+// this codebase's long-standing pattern of render-coupled logic being
+// verified only by manual zig build run checks.
+
+test "anyTransportSelected: all false → false" {
+    const state = WizardState{};
+    try std.testing.expect(!anyTransportSelected(&state));
+}
+
+test "anyTransportSelected: any one true → true" {
+    var state = WizardState{};
+    state.wagon = true;
+    try std.testing.expect(anyTransportSelected(&state));
+
+    var state2 = WizardState{};
+    state2.tradersSkiff = true;
+    try std.testing.expect(anyTransportSelected(&state2));
 }

@@ -26,6 +26,10 @@ pub const LoadError = struct {
     filename: []const u8,
     message: []const u8,
     kind: LoadErrorKind,
+    // false only when `message` is a static fallback literal (set when the
+    // allocPrint building the real message itself failed, e.g. OOM) rather
+    // than allocator-owned memory — callers must not free it in that case.
+    message_owned: bool = true,
 };
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -42,7 +46,6 @@ pub const AppState = struct {
     needs_wizard: bool,
     load_error: ?LoadError,
     wizard_state: onboarding.WizardState = .{},
-    engine_dirty: bool = false,
     show_settings: bool = false,
     settings_state: settings.SettingsState = .{},
     active_tab: enum { threshold, live } = .threshold,
@@ -116,7 +119,7 @@ pub const AppState = struct {
             config_mod.deinitConfig(c, self.allocator);
         }
         if (self.load_error) |err| {
-            self.allocator.free(err.message);
+            if (err.message_owned) self.allocator.free(err.message);
         }
         // Every non-null threshold_cache slot is a GPA-owned box (Story 4.1)
         // — destroy them all on shutdown, same convention as the icon cache
@@ -190,18 +193,23 @@ pub const AppState = struct {
 
     fn setLoadError(self: *AppState, kind: LoadErrorKind, filename: []const u8, err: anyerror) void {
         const fname = filename;
-        const msg = std.fmt.allocPrint(self.allocator, "{s}", .{@errorName(err)}) catch "unknown error";
+        var owned = true;
+        const msg = std.fmt.allocPrint(self.allocator, "{s}", .{@errorName(err)}) catch blk: {
+            owned = false;
+            break :blk "unknown error";
+        };
         self.load_error = LoadError{
             .filename = fname,
             .message = msg,
             .kind = kind,
+            .message_owned = owned,
         };
     }
 
     fn retryAfterRestore(self: *AppState) void {
         // Free the existing load_error before retrying.
         if (self.load_error) |err| {
-            self.allocator.free(err.message);
+            if (err.message_owned) self.allocator.free(err.message);
             self.load_error = null;
         }
         self.runStartupSequence();
@@ -346,13 +354,20 @@ pub const AppState = struct {
                     self.retryAfterRestore();
                 } else |re| {
                     // Replace the load error message with the restore failure.
-                    self.allocator.free(self.load_error.?.message);
+                    if (self.load_error.?.message_owned) {
+                        self.allocator.free(self.load_error.?.message);
+                    }
+                    var owned = true;
                     const new_msg = std.fmt.allocPrint(
                         self.allocator,
                         "Restore failed: {s}",
                         .{@errorName(re)},
-                    ) catch "restore failed";
+                    ) catch blk: {
+                        owned = false;
+                        break :blk "restore failed";
+                    };
                     self.load_error.?.message = new_msg;
+                    self.load_error.?.message_owned = owned;
                 }
             }
         }
@@ -480,7 +495,6 @@ pub const AppState = struct {
             return;
         };
         self.allocator.free(old_origin);
-        self.engine_dirty = true;
         self.origin_error = null;
         // A threshold-add/remove error from the previous Origin is no longer
         // relevant once the Origin has changed.
@@ -1347,6 +1361,35 @@ test "handleOriginChange clears live_results (Story 3.2)" {
     try state.handleOriginChange(1); // switch to "dunbarton"
 
     try std.testing.expect(state.live_results == null);
+
+    allocator.free(state.config.?.origin);
+}
+
+test "handleOriginChange clears threshold_state.error_msg and live_state.write_error (review finding regression guard)" {
+    // A prior review found that the live_state.write_error reset was
+    // missing from handleOriginChange (see the "review finding" comment on
+    // that reset in the function itself). This test guards against either
+    // reset regressing again: both are stale-error state from the previous
+    // Origin and must not survive an Origin switch.
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.transports.backpack = true;
+    cfg.origin = try allocator.dupe(u8, "tirChonaill");
+
+    var state = makeThresholdTestState(allocator, exe_dir, cfg);
+    state.threshold_state.error_msg = "stale error from previous Origin";
+    state.live_state.write_error = "stale write error from previous Origin";
+
+    try state.handleOriginChange(1); // switch to "dunbarton"
+
+    try std.testing.expect(state.threshold_state.error_msg == null);
+    try std.testing.expect(state.live_state.write_error == null);
 
     allocator.free(state.config.?.origin);
 }
