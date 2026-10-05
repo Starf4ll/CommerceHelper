@@ -6,8 +6,11 @@ const matrix_mod = @import("matrix.zig");
 const optimizer_mod = @import("optimizer.zig");
 const threshold_mod = @import("threshold.zig");
 
-/// Maximum number of distinct Goods supported per Origin sweep — mirrors
-/// threshold.zig's own MAX_GOODS stack-buffer convention.
+/// Maximum number of distinct Goods supported per Origin sweep. Real data
+/// has 5 Goods per Outpost; this gives generous headroom. Historically
+/// mirrored threshold.zig's own MAX_GOODS, but that bound was lowered to 8
+/// in Story 4.1 for a different reason (per-Origin eligible-Good cap) — the
+/// two no longer need to match.
 const MAX_GOODS: usize = 64;
 
 /// Maximum rows kept in a calculate() result — top 10 by Ducats/min.

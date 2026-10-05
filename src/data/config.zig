@@ -73,18 +73,24 @@ pub const TRANSPORT_STATS: TransportStatsTable = .{
     .tradersSkiff = .{ .weightCapacity = 1200, .slotCount = 8, .speedFactor = 2.40 },
 };
 
+// Field order matches OUTPOST_KEYS above — kept in sync so config.json's
+// merchantRatings block serializes/hand-edits in the same outpost order as
+// every other outpost-ordered table in this app (routes.zig, UI dropdowns).
+// Field access is always by name (merchantRatingAt, ratings_valid below), so
+// this order has no effect on parsing/validation correctness — it matters
+// only for JSON readability.
 pub const MerchantRatings = struct {
     tirChonaill: u8 = 1,
     dunbarton: u8 = 1,
     bangor: u8 = 1,
-    cobh: u8 = 1,
-    tara: u8 = 1,
     emainMacha: u8 = 1,
     taillteann: u8 = 1,
+    tara: u8 = 1,
+    cobh: u8 = 1,
     belvast: u8 = 1,
     qilla: u8 = 1,
-    cor: u8 = 1,
     filia: u8 = 1,
+    cor: u8 = 1,
     vales: u8 = 1,
 };
 
@@ -216,4 +222,40 @@ pub fn writeConfig(config: Config, allocator: std.mem.Allocator, exe_dir: []cons
 /// Only origin requires freeing; all other fields are value types.
 pub fn deinitConfig(config: *Config, allocator: std.mem.Allocator) void {
     allocator.free(config.origin);
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+test "loadConfig rejects thresholdCount > MAX_THRESHOLDS" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.transports.backpack = true;
+    cfg.thresholdCount = @intCast(MAX_THRESHOLDS + 1);
+
+    try writeConfig(cfg, allocator, exe_dir);
+
+    const loaded = loadConfig(allocator, exe_dir);
+    try std.testing.expect(loaded == null);
+}
+
+test "loadConfig rejects a merchantRatings field outside 1-9" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(exe_dir);
+
+    var cfg = Config{};
+    cfg.transports.backpack = true;
+    cfg.merchantRatings.bangor = 10; // out of the valid 1-9 range
+
+    try writeConfig(cfg, allocator, exe_dir);
+
+    const loaded = loadConfig(allocator, exe_dir);
+    try std.testing.expect(loaded == null);
 }

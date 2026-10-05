@@ -1,5 +1,6 @@
 const std = @import("std");
 const routes_mod = @import("../data/routes.zig");
+const config_mod = @import("../data/config.zig");
 
 pub const RouteMatrix = struct {
     baseTimes: [12][12]u32,
@@ -24,6 +25,24 @@ const QIL = 8; // qilla
 const FIL = 9; // filia
 const COR = 10; // cor
 const VAL = 11; // vales
+
+comptime {
+    // Enforced link for the "Must match OUTPOST_KEYS" comment above — if
+    // config.zig's OUTPOST_KEYS is ever reordered, this fails the build
+    // instead of silently corrupting every route pair computed below.
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[TC], "tirChonaill"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[DUN], "dunbarton"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[BAN], "bangor"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[EMA], "emainMacha"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[TAI], "taillteann"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[TAR], "tara"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[COB], "cobh"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[BEL], "belvast"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[QIL], "qilla"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[FIL], "filia"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[COR], "cor"));
+    std.debug.assert(std.mem.eql(u8, config_mod.OUTPOST_KEYS[VAL], "vales"));
+}
 
 /// Build a RouteMatrix from parsed RouteData.  No allocator required — the
 /// result is a plain fixed-size value type.

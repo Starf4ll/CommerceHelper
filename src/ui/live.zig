@@ -10,8 +10,11 @@ const Good = goods_mod.Good;
 const engine_live = @import("../engine/live.zig");
 
 /// Maximum number of distinct Goods supported per Origin — mirrors
-/// `engine/threshold.zig`'s own MAX_GOODS. No shared header exists between
-/// the two modules, so each keeps its own copy of this constant.
+/// `engine/live.zig`'s own MAX_GOODS (64). `engine/threshold.zig` uses a
+/// different, smaller bound (8) for an unrelated reason (its own per-Origin
+/// eligible-Good cap), so the two are not expected to match. No shared
+/// header exists between any of these modules, so each keeps its own copy
+/// of this constant.
 pub const MAX_GOODS: usize = 64;
 
 /// Per-Origin, per-Good, per-Destination profit inputs (FR entered by the
