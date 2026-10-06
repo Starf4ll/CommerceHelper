@@ -1,4 +1,4 @@
-// ui/threshold.zig — Threshold Mode Good sub-tabs (Story 4.2)
+// ui/threshold.zig — Threshold Mode Good sub-tabs
 const std = @import("std");
 const dvui = @import("dvui");
 
@@ -9,7 +9,7 @@ const goods_mod = @import("../data/goods.zig");
 const Good = goods_mod.Good;
 const threshold_mod = @import("../engine/threshold.zig");
 
-/// Text color applied to a highlighted row's labels (Story 4.3) — reuses the
+/// Text color applied to a highlighted row's labels — reuses the
 /// exact `color_text` value/mechanism already established by every other
 /// distinct-color row in this codebase (this file's threshold error message,
 /// `settings.zig`/`onboarding.zig`/`live.zig`'s write-error labels): setting
@@ -18,9 +18,8 @@ const threshold_mod = @import("../engine/threshold.zig");
 /// is introduced.
 const HIGHLIGHT_COLOR = dvui.Color{ .r = 200, .g = 50, .b = 50, .a = 255 };
 
-/// Persistent UI state for the "add new threshold" input row (Story 2.7) and
-/// the active Good sub-tab (Story 4.2), stored on AppState exactly like
-/// SettingsState/settings_state.
+/// Persistent UI state for the "add new threshold" input row and the active
+/// Good sub-tab, stored on AppState exactly like SettingsState/settings_state.
 pub const ThresholdState = struct {
     new_value: u32 = 0,
     error_msg: ?[]const u8 = null,
@@ -33,8 +32,6 @@ pub const ThresholdState = struct {
     active_good_idx: usize = 0,
 };
 
-/// Renders one placeholder label, centered, matching the "no data yet" style
-/// used elsewhere in this tab.
 fn placeholder(text: []const u8) void {
     dvui.label(@src(), "{s}", .{text}, .{
         .expand = .horizontal,
@@ -125,8 +122,9 @@ pub fn renderTab(app_state: *AppState) !void {
     }
 
     // Resolve the origin's index fresh every frame — mirrors the linear scan
-    // renderMainArea uses for the Origin dropdown. No second UI-level cache;
-    // threshold_cache itself is kept fresh by AppState.update() each frame.
+    // renderMainArea uses for the Origin dropdown (no second UI-level cache;
+    // see ARCHITECTURE.md AD-4/AD-5 for why threshold_cache itself doesn't
+    // need one here).
     var origin_idx: ?usize = null;
     for (config_mod.OUTPOST_KEYS, 0..) |key, i| {
         if (std.mem.eql(u8, origin, key)) {
@@ -154,9 +152,9 @@ pub fn renderTab(app_state: *AppState) !void {
         slot.good_count,
     );
 
-    // ── Good sub-tab row + active content (Story 4.2) — rendered first, above
-    // the shared Threshold controls below; one button per eligible Good,
-    // built entirely off slot.good_count/cells, never a hardcoded count ───────
+    // ── Good sub-tab row + active content — rendered first, above the shared
+    // Threshold controls below; one button per eligible Good, built entirely
+    // off slot.good_count/cells, never a hardcoded count ─────────────────────
     if (noGoodsPlaceholder(slot.good_count)) |msg| {
         placeholder(msg);
     } else {
@@ -189,7 +187,7 @@ pub fn renderTab(app_state: *AppState) !void {
             }
         }
 
-        // Active Good's content area (Story 4.3): one collapsible section per
+        // Active Good's content area: one collapsible section per
         // configured Threshold (ascending), each listing every reachable
         // Destination's best Transport/Travel Time/Ducats-per-min; an
         // unreachable Destination still gets a row ("No route available")
@@ -200,8 +198,8 @@ pub fn renderTab(app_state: *AppState) !void {
 
     _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 2 } });
 
-    // ── New Threshold input row (Story 2.7) — shared across every Good's tab,
-    // rendered below the sub-tabs above (Story 4.2) ─────────────────────────────
+    // ── New Threshold input row — shared across every Good's tab, rendered
+    // below the sub-tabs above ────────────────────────────────────────────────
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
@@ -237,10 +235,8 @@ pub fn renderTab(app_state: *AppState) !void {
         });
     }
 
-    // ── Existing Thresholds list (Story 2.7's Remove control, relocated here
-    // alongside the Add row above — Story 4.2) — shared across every Good's
-    // tab since the Threshold list itself is shared; reuses removeThreshold
-    // unchanged ──────────────────────────────────────────────────────────────
+    // ── Existing Thresholds list — shared across every Good's tab since the
+    // Threshold list itself is shared; reuses removeThreshold unchanged ──────
     {
         dvui.label(@src(), "Existing Thresholds:", .{}, .{
             .margin = .{ .x = 16, .y = 4 },
@@ -330,7 +326,7 @@ fn renderTableHeader() void {
     dvui.label(@src(), "Ducats/min", .{}, .{ .min_size_content = .{ .w = COL_DUCATS_W } });
 }
 
-/// Renders the active Good's tab content (Story 4.3): a header row followed
+/// Renders the active Good's tab content: a header row followed
 /// by one `dvui.expander` section per configured Threshold (ascending,
 /// `slot.cells[good_slot][0..slot.threshold_count]`), collapsed by default,
 /// each expanding into one row per Destination per `rowContent`'s decision —
@@ -339,9 +335,10 @@ fn renderTableHeader() void {
 /// highlighted via `HIGHLIGHT_COLOR`. A zero-configured-Thresholds Origin
 /// gets a placeholder instead of a silently empty area.
 ///
-/// Read-only over `slot` — no re-sweeping/recomputing here (Boundaries'
-/// "Never"); `slot` is a pointer so neither this function nor
-/// `bestCellInGood` ever copies the ~112KB `OriginResult`.
+/// Read-only over `slot` — no re-sweeping/recomputing here (UI never calls
+/// engine computation directly, see ARCHITECTURE.md AD-4); `slot` is a
+/// pointer so neither this function nor `bestCellInGood` ever copies the
+/// ~112KB `OriginResult`.
 fn renderGoodContent(
     app_state: *AppState,
     slot: *threshold_mod.OriginResult,
@@ -405,7 +402,7 @@ fn renderGoodContent(
             });
 
             switch (content) {
-                .skip => unreachable, // already `continue`d above
+                .skip => unreachable,
                 .no_route => {
                     // Same destination-name column as a data row, then a
                     // single label spanning the combined width of the three
@@ -446,9 +443,10 @@ fn renderGoodContent(
 }
 
 /// Renders a Good's icon (if readable and decodable) + name, with its
-/// description as a hover tooltip (AD-8). Icon failure falls back to
-/// name-only, never crashes — iconTexture() returns null on either a read
-/// error or a decode error.
+/// description as a hover tooltip (icon+name+tooltip convention: see
+/// ARCHITECTURE.md AD-8). Icon failure falls back to name-only, never
+/// crashes — iconTexture() returns null on either a read error or a decode
+/// error.
 fn goodCell(good: Good, id_extra: usize, app_state: *AppState) void {
     var wd: dvui.WidgetData = undefined;
     var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -606,9 +604,7 @@ test "bestCellInGood: exact tie resolves to the first-encountered cell (ascendin
     result.cells[0][0][2].reachable = true;
     result.cells[0][0][2].ducats_per_min = 500.0;
     result.cells[0][1][4].reachable = true;
-    result.cells[0][1][4].ducats_per_min = 500.0; // exact tie: only a strictly
-    // greater ducats_per_min replaces the current best, so the earlier
-    // (threshold_idx=0, destination_idx=2) cell must win, not this one.
+    result.cells[0][1][4].ducats_per_min = 500.0; // exact tie
 
     const best = bestCellInGood(&result, 0).?;
     try std.testing.expectEqual(@as(usize, 0), best.threshold_idx);
@@ -620,7 +616,6 @@ test "bestCellInGood: only reads the given good_slot's cells, other slots are ig
     result.cells[1][0][0].reachable = true;
     result.cells[1][0][0].ducats_per_min = 9999.0;
 
-    // good_slot 0 has no reachable cells of its own, even though good_slot 1 does.
     try std.testing.expect(bestCellInGood(&result, 0) == null);
 
     const best = bestCellInGood(&result, 1).?;
@@ -644,7 +639,7 @@ fn makeTestCell(reachable: bool) threshold_mod.ThresholdCell {
 
 test "rowContent: reachable cell at a non-Origin Destination yields the real-data decision" {
     const cell = makeTestCell(true);
-    const content = rowContent(cell, 1, 0); // dest_idx=1, origin_idx=0 — not the Origin
+    const content = rowContent(cell, 1, 0);
 
     switch (content) {
         .data => |d| {
@@ -658,7 +653,7 @@ test "rowContent: reachable cell at a non-Origin Destination yields the real-dat
 
 test "rowContent: unreachable cell at a non-Origin Destination yields the no-route decision" {
     const cell = makeTestCell(false);
-    const content = rowContent(cell, 1, 0); // dest_idx=1, origin_idx=0 — not the Origin
+    const content = rowContent(cell, 1, 0);
 
     try std.testing.expect(content == .no_route);
 }

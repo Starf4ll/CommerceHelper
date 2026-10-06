@@ -114,7 +114,7 @@ pub const Config = struct {
 };
 
 /// Returns the player's Merchant Rating at the given Outpost index (0-11,
-/// matching OUTPOST_KEYS order). Reusable Origin-indexed rating lookup.
+/// matching OUTPOST_KEYS order).
 pub fn merchantRatingAt(ratings: MerchantRatings, outpost_idx: usize) u8 {
     return switch (outpost_idx) {
         0 => ratings.tirChonaill,
@@ -176,7 +176,6 @@ pub fn loadConfig(allocator: std.mem.Allocator, exe_dir: []const u8) ?Config {
         return null;
     }
 
-    // Merchant ratings must be in the valid 1–9 range.
     const mr = cfg.merchantRatings;
     const ratings_valid =
         (mr.tirChonaill >= 1 and mr.tirChonaill <= 9) and
@@ -207,7 +206,6 @@ pub fn loadConfig(allocator: std.mem.Allocator, exe_dir: []const u8) ?Config {
     return cfg;
 }
 
-/// Write config to {exe_dir}/config.json.
 pub fn writeConfig(config: Config, allocator: std.mem.Allocator, exe_dir: []const u8) !void {
     const json = try std.json.stringifyAlloc(allocator, config, .{ .whitespace = .indent_2 });
     defer allocator.free(json);

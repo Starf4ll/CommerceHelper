@@ -87,12 +87,8 @@ pub fn main() !void {
 
 /// Idles until either `timeout_micros` elapses or an OS input message
 /// arrives, whichever comes first. Returns true if woken by a message.
-///
-/// This is dvui's idle-wait contract (see `Window.waitTime`) adapted for
-/// the DX11 backend, which — unlike SDL — has no built-in
-/// `waitEventTimeout`. Mirrors dvui's SDL backend (`sdl.zig`'s
-/// `waitEventTimeout`), using `MsgWaitForMultipleObjects` so the wait is
-/// interruptible by input rather than a fixed sleep.
+/// Implements the DX11-backend half of the event-driven render loop pacing
+/// described in ARCHITECTURE.md AD-10.
 fn waitEventTimeout(timeout_micros: u32) bool {
     const ms = idle_wait.msFromMicros(timeout_micros, win32.INFINITE);
 

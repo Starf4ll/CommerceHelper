@@ -1,8 +1,8 @@
-// data/live_profits.zig — Live Mode profit persistence I/O (Story 3.4)
+// data/live_profits.zig — Live Mode profit persistence I/O
 //
 // Pure data-layer module: owns only load/write/deinit of live_profits.json.
-// No knowledge of LiveState or GoodsMap (AD-2 data-layer isolation) — AppState
-// (ui layer) does all name<->index translation. Entries are keyed by Origin,
+// No knowledge of LiveState or GoodsMap — AppState (ui layer) does all
+// name<->index translation. Entries are keyed by Origin,
 // Good and Destination NAME strings (never array indices) so the file
 // survives an Outpost/Good reindex.
 const std = @import("std");

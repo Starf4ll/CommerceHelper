@@ -9,7 +9,6 @@ const AppState = app_mod.AppState;
 // ── WizardState ───────────────────────────────────────────────────────────────
 
 pub const WizardState = struct {
-    // Transport checkboxes
     backpack: bool = false,
     handcart: bool = false,
     wagon: bool = false,
@@ -19,11 +18,9 @@ pub const WizardState = struct {
     camel: bool = false,
     tradersSkiff: bool = false,
 
-    // Modifier toggles
     commercePartner: bool = false,
     grandmasterTitle: bool = false,
 
-    // Merchant ratings (1–9)
     tirChonaill: u8 = 1,
     dunbarton: u8 = 1,
     bangor: u8 = 1,
@@ -54,14 +51,9 @@ fn anyTransportSelected(s: *const WizardState) bool {
         s.alpaca or s.dogSled or s.camel or s.tradersSkiff;
 }
 
-/// Render a labeled u8 number entry that clamps to [min_val, max_val] on every
-/// frame.  Uses dvui.textEntryNumber internally; id_extra differentiates
-/// multiple calls at the same @src().
 /// IMPORTANT: id_extra values must be stable sequential integers matching call
 /// order — reordering calls without updating id_extra will corrupt dvui widget
 /// identity and cause stale input state.
-/// Returns true when the current value is in bounds, false when the field is
-/// showing red (TooSmall or TooBig).  Callers accumulate this to gate Confirm.
 fn ratingRow(
     comptime label: []const u8,
     value: *u8,
@@ -95,8 +87,6 @@ fn ratingRow(
     }
 }
 
-/// Render a labeled u32 integer-percent entry.  u32 cannot go negative so no
-/// clamping is needed; the field is always valid once rendered.
 fn percentRow(
     comptime label: []const u8,
     value: *u32,
@@ -127,7 +117,6 @@ fn percentRow(
 // ── render ────────────────────────────────────────────────────────────────────
 
 pub fn render(state: *WizardState, app_state: *AppState) !void {
-    // Full-window scroll area so the form is usable at any window size.
     var scroll = dvui.scrollArea(
         @src(),
         .{},
@@ -251,7 +240,6 @@ pub fn render(state: *WizardState, app_state: *AppState) !void {
 
         if (can_confirm) {
             if (dvui.button(@src(), "Confirm", .{}, .{})) {
-                // Build Config from wizard state.
                 const origin = app_state.allocator.dupe(u8, "") catch |err| {
                     state.write_error = @errorName(err);
                     return;
@@ -292,12 +280,10 @@ pub fn render(state: *WizardState, app_state: *AppState) !void {
                     // Free the origin we just allocated since the config won't
                     // be stored in app_state.
                     app_state.allocator.free(origin);
-                    // Show error near Confirm and re-enable the button next frame.
                     state.write_error = @errorName(err);
                     return;
                 };
 
-                // Free any previously-stored config before replacing it.
                 if (app_state.config) |*old| {
                     config_mod.deinitConfig(old, app_state.allocator);
                 }
@@ -306,7 +292,6 @@ pub fn render(state: *WizardState, app_state: *AppState) !void {
                 state.write_error = null;
             }
         } else {
-            // Disabled appearance: blend text and fill colors, skip event processing.
             const control_opts: dvui.Options = .{};
             const blended = dvui.Color.average(
                 control_opts.color(.text),

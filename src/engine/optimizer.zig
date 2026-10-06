@@ -97,7 +97,6 @@ pub fn mixedLoadFill(
 
     const candidates = candidate_buf[0..candidate_count];
 
-    // Sort by profit-per-slot descending, tie-break weight ascending, tie-break name ascending.
     const SortCtx = struct {
         g: []const goods_mod.Good,
         p: []const u32,
@@ -123,7 +122,6 @@ pub fn mixedLoadFill(
         const qty_by_slots: u32 = remaining_slots * good.quantityPerSlot;
         const qty_by_weight: u32 = remaining_weight / good.weight;
         const raw_qty = @min(qty_by_slots, qty_by_weight);
-        // Round down to nearest complete slot.
         const qty = (raw_qty / good.quantityPerSlot) * good.quantityPerSlot;
         if (qty == 0) continue;
 
@@ -196,7 +194,7 @@ test "effectiveDiscount rating 9: rating=9 gear=3 → 6" {
     try std.testing.expectEqual(@as(u32, 6), effectiveDiscount(9, 3));
 }
 
-// ── Story 2.3 tests: effectiveTravelTime ─────────────────────────────────────
+// ── Tests: effectiveTravelTime ───────────────────────────────────────────────
 
 test "effectiveTravelTime speed-only land: base=600 boat=0 factor=1.90 bonus=10 → ≈287.08" {
     const result = effectiveTravelTime(600, 0, 1.90, 10);
@@ -213,7 +211,7 @@ test "effectiveTravelTime zero speed bonus: base=500 boat=0 factor=2.15 bonus=0 
     try std.testing.expectApproxEqAbs(@as(f64, 232.56), result, 0.01);
 }
 
-// ── Story 2.3 tests: mixedLoadFill ───────────────────────────────────────────
+// ── Tests: mixedLoadFill ──────────────────────────────────────────────────────
 
 // Helper: build a minimal Good for testing (description, image unused by optimizer).
 fn makeGood(name: []const u8, weight: u32, qty_per_slot: u32) goods_mod.Good {

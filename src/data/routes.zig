@@ -176,18 +176,15 @@ fn parseRoutes(allocator: std.mem.Allocator, text: []const u8) !RouteData {
         .{ .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
-    // RouteData contains only numeric fields — safe to copy out.
     return parsed.value;
 }
 
-/// Write the embedded default routes.json to exe_dir/routes.json.
 pub fn restoreRoutes(allocator: std.mem.Allocator, exe_dir: []const u8) !void {
     const out_path = try std.fs.path.join(allocator, &.{ exe_dir, "routes.json" });
     defer allocator.free(out_path);
     try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = DEFAULT_ROUTES_JSON });
 }
 
-/// Write `routes` to {exe_dir}/routes.json.
 pub fn writeRoutes(routes: RouteData, allocator: std.mem.Allocator, exe_dir: []const u8) !void {
     const json = try std.json.stringifyAlloc(allocator, routes, .{ .whitespace = .indent_2 });
     defer allocator.free(json);

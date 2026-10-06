@@ -1,4 +1,4 @@
-// ui/live.zig — Live Mode profit input grid (Story 3.1)
+// ui/live.zig — Live Mode profit input grid
 const std = @import("std");
 const dvui = @import("dvui");
 
@@ -17,8 +17,8 @@ const engine_live = @import("../engine/live.zig");
 /// of this constant.
 pub const MAX_GOODS: usize = 64;
 
-/// Per-Origin, per-Good, per-Destination profit inputs (FR entered by the
-/// player in Live Mode), persisted across sessions and Origins (Story 3.4).
+/// Per-Origin, per-Good, per-Destination profit inputs entered by the player
+/// in Live Mode, persisted across sessions and Origins.
 /// `profits[origin_idx][good_idx][dest_idx]` keys off the Origin's
 /// OUTPOST_KEYS index (0-11), the Good's position in that Origin's
 /// `origin_goods` slice (stable — only changes if the Good list itself
@@ -35,8 +35,6 @@ pub const LiveState = struct {
     write_error: ?[]const u8 = null,
 };
 
-/// Renders one placeholder label, centered, matching the "no data yet" style
-/// used elsewhere in this tab (mirrors `threshold.zig`'s placeholder).
 fn placeholder(text: []const u8) void {
     dvui.label(@src(), "{s}", .{text}, .{
         .expand = .horizontal,
@@ -94,8 +92,6 @@ fn profitField(value: *f32, id_extra: usize, tab_index: u16) void {
     te.install();
     te.processEvents();
 
-    // Strip anything outside the digits+"." filter before drawing — this is
-    // what keeps '-' from ever being inserted, not just from parsing.
     te.filterIn(filter);
 
     const parsed = parseProfitInput(te.getText());
@@ -156,9 +152,10 @@ fn goodHeader(good: Good, id_extra: usize, app_state: *AppState) void {
 }
 
 /// Renders a Good's icon (if readable and decodable) + name, with its
-/// description as a hover tooltip (AD-8). Icon failure falls back to
-/// name-only, never crashes — iconTexture() returns null on either a read
-/// error or a decode error.
+/// description as a hover tooltip (icon+name+tooltip convention: see
+/// ARCHITECTURE.md AD-8). Icon failure falls back to name-only, never
+/// crashes — iconTexture() returns null on either a read error or a decode
+/// error.
 ///
 /// Mirrors `threshold.zig`'s module-private `goodCell` exactly (same
 /// icon/label/tooltip mechanics) — that helper isn't exported, so a result
@@ -255,8 +252,9 @@ fn loadCompositionCell(load: engine_live.LoadComposition, origin_goods: []const 
 }
 
 /// Selects the placeholder message for the two non-table `live_results`
-/// states (app.zig:51-55's null-vs-zero-count distinction). Returns null when
-/// there are rows to render, telling the caller to render the table instead.
+/// states — `AppState.live_results`'s null-vs-zero-count distinction. Returns
+/// null when there are rows to render, telling the caller to render the table
+/// instead.
 /// Pure/dvui-free so it's directly unit-testable, unlike the render code
 /// around it.
 fn resultsMessage(live_results: ?engine_live.LiveResults) ?[]const u8 {
@@ -286,8 +284,6 @@ pub fn renderTab(app_state: *AppState) !void {
         return;
     }
 
-    // Resolve the origin's index fresh every frame — same linear scan
-    // threshold.zig/renderMainArea use.
     var origin_idx: ?usize = null;
     for (config_mod.OUTPOST_KEYS, 0..) |key, i| {
         if (std.mem.eql(u8, origin, key)) {
@@ -310,9 +306,9 @@ pub fn renderTab(app_state: *AppState) !void {
     var tab_counter: u16 = 1;
     var any_visible = false;
 
-    // Snapshot this Origin's profit slice before rendering its fields, so
-    // saveLiveProfits (below) can tell whether anything changed this frame —
-    // exact convention as saveRoutes's before/after diff.
+    // Snapshot before rendering so saveLiveProfits (below) can tell whether
+    // anything changed this frame — see ARCHITECTURE.md's snapshot/diff/
+    // revert persistence convention.
     const profits_before = app_state.live_state.profits[idx];
 
     for (origin_goods, 0..) |good, good_idx| {
@@ -363,8 +359,6 @@ pub fn renderTab(app_state: *AppState) !void {
         _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 4 }, .id_extra = good_idx });
     }
 
-    // Persist any profit-field edit this frame (no-op if nothing changed) —
-    // exact saveRoutes convention: diff-before-write, revert+error on failure.
     app_state.saveLiveProfits(idx, profits_before);
 
     if (app_state.live_state.write_error) |msg| {
@@ -379,8 +373,8 @@ pub fn renderTab(app_state: *AppState) !void {
         placeholder("No Goods available at your Merchant Rating for this Origin");
     }
 
-    // Manual trigger (AD-5 Level 3) — engine/live.zig's calculate() never
-    // runs automatically; only this button invokes it.
+    // Manual trigger only (see ARCHITECTURE.md AD-5) — engine/live.zig's
+    // calculate() never runs automatically; only this button invokes it.
     {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .gravity_x = 0.5,
@@ -393,10 +387,7 @@ pub fn renderTab(app_state: *AppState) !void {
         }
     }
 
-    // ── Results table (Story 3.3) ───────────────────────────────────────────
-    // Reads app_state.live_results only — never triggers recalculation. Null
-    // (never calculated) and count==0 (calculated, no profitable combos) are
-    // distinct states per app.zig:51-55; resultsMessage tells them apart.
+    // ── Results table ───────────────────────────────────────────────────────
     if (resultsMessage(app_state.live_results)) |msg| {
         placeholder(msg);
         return;
@@ -496,7 +487,7 @@ test "parseProfitInput: valid decimal parses through" {
     try std.testing.expectEqual(@as(f32, 12.5), parseProfitInput("12.5"));
 }
 
-// ── resultsMessage tests (Story 3.3) ────────────────────────────────────────
+// ── resultsMessage tests ─────────────────────────────────────────────────────
 // The render code around resultsMessage requires a live dvui window (see
 // Verification's manual-check note), but the null-vs-zero-count decision
 // itself is pure and fully covered here.
@@ -521,10 +512,9 @@ test "resultsMessage: nonzero count returns null so the caller renders the table
     try std.testing.expect(resultsMessage(results) == null);
 }
 
-// ── travelMinutes tests (Story 3.3) ─────────────────────────────────────────
+// ── travelMinutes tests ──────────────────────────────────────────────────────
 
 test "travelMinutes: derives minutes from total_profit/ducats_per_min" {
-    // 500 total profit at 100 Ducats/min implies 5 minutes of travel.
     try std.testing.expectApproxEqAbs(@as(f64, 5.0), travelMinutes(500.0, 100.0), 0.0001);
 }
 
