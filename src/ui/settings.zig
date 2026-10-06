@@ -19,15 +19,12 @@ pub const SettingsState = struct {
 
     // Which Settings sub-tab is currently visible. Purely a display selector —
     // fields on either tab still save immediately on change, tab switches never
-    // discard or delay a save (see spec-destination-order-settings-toggle-and-tabs).
+    // discard or delay a save.
     settings_tab: enum { general, route_times } = .general,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Render a labeled u8 number entry that clamps to [1, 9] on every frame.
-/// Uses dvui.textEntryNumber internally; id_extra differentiates multiple
-/// calls at the same @src().
 /// IMPORTANT: id_extra values must be stable sequential integers matching call
 /// order — reordering calls without updating id_extra will corrupt dvui widget
 /// identity and cause stale input state.
@@ -69,8 +66,6 @@ fn ratingRow(
 }
 
 /// Render a labeled u32 integer entry (percentages, route-time seconds, etc.).
-/// u32 cannot go negative so no clamping is needed; the field is always valid
-/// once rendered.
 fn percentRow(
     comptime label: []const u8,
     value: *u32,
@@ -109,7 +104,7 @@ fn anyTransportSelected(t: config_mod.TransportFlags) bool {
 }
 
 /// Compare two Config values — returns true if any value-type field differs.
-/// `origin` is excluded: it is not editable in Settings (Story 1.5 handles it).
+/// `origin` is excluded: it is not editable in Settings.
 fn valueFieldsChanged(a: Config, b: Config) bool {
     return !std.meta.eql(a.transports, b.transports) or
         a.commercePartner != b.commercePartner or
@@ -122,10 +117,8 @@ fn valueFieldsChanged(a: Config, b: Config) bool {
 // ── render ────────────────────────────────────────────────────────────────────
 
 pub fn render(state: *SettingsState, app_state: *AppState) !void {
-    // Snapshot before rendering so we can detect changes afterward.
     const before = app_state.config.?;
 
-    // Full-window scroll area so the form is usable at any window size.
     var scroll = dvui.scrollArea(
         @src(),
         .{},
@@ -261,11 +254,11 @@ pub fn render(state: *SettingsState, app_state: *AppState) !void {
     if (state.settings_tab == .route_times) {
         // ── Section: Route Times (seconds) ───────────────────────────────────────
         // Snapshot before rendering so saveRoutes can detect changes and revert
-        // on write failure. Raw RouteData fields are edited directly (not the
-        // computed matrix) — see spec-2-5 Design Notes for why.
+        // on write failure (see ARCHITECTURE.md's snapshot/diff/revert
+        // persistence convention). Raw RouteData fields are edited directly,
+        // not the derived route matrix.
         const routes_before: RouteData = app_state.routes.?;
 
-        // -- Boat ports (4 subsections, 20 fields) --------------------------------
         {
             dvui.label(@src(), "Port: Belvast", .{}, .{ .expand = .horizontal, .margin = .{ .y = 4, .x = 24 } });
             {
@@ -322,7 +315,6 @@ pub fn render(state: *SettingsState, app_state: *AppState) !void {
             _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 4 } });
         }
 
-        // -- Uladh outposts (7 subsections, 42 fields) ----------------------------
         {
             dvui.label(@src(), "Tir Chonaill", .{}, .{ .expand = .horizontal, .margin = .{ .y = 4, .x = 24 } });
             {
@@ -428,7 +420,6 @@ pub fn render(state: *SettingsState, app_state: *AppState) !void {
             _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 4 } });
         }
 
-        // -- Iria outposts (4 subsections, 12 fields) -----------------------------
         {
             dvui.label(@src(), "Qilla", .{}, .{ .expand = .horizontal, .margin = .{ .y = 4, .x = 24 } });
             {
@@ -477,9 +468,9 @@ pub fn render(state: *SettingsState, app_state: *AppState) !void {
             _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .x = 16, .y = 4 } });
         }
 
-        // Persist any route-field edit this frame (no-op if nothing changed).
         // Rebuild of route_matrix and threshold cache invalidation happen inside
-        // saveRoutes — settings.zig never touches engine/matrix.zig directly.
+        // saveRoutes — settings.zig never touches engine/matrix.zig directly
+        // (see ARCHITECTURE.md AD-2/AD-5).
         app_state.saveRoutes(routes_before);
     }
 
@@ -490,12 +481,12 @@ pub fn render(state: *SettingsState, app_state: *AppState) !void {
         if (!anyTransportSelected(cfg.transports)) {
             write_ok = false;
             state.write_error = "At least one transport is required";
-            app_state.config.? = before; // revert in-frame mutations
+            app_state.config.? = before;
         } else {
             config_mod.writeConfig(cfg, app_state.allocator, app_state.exe_dir) catch |err| {
                 write_ok = false;
                 state.write_error = @errorName(err);
-                app_state.config.? = before; // revert in-frame mutations
+                app_state.config.? = before;
             };
         }
         app_state.threshold_cache_stale = true;

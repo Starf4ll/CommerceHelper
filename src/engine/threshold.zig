@@ -4,18 +4,14 @@ const goods_mod = @import("../data/goods.zig");
 const matrix_mod = @import("matrix.zig");
 const optimizer_mod = @import("optimizer.zig");
 
-/// Maximum number of eligible Goods swept per Origin (Story 4.1). Real data
-/// has 5 Goods per Outpost; this gives 60% headroom. A hand-edited
-/// `goods.json` that exceeds this bound simply stops being swept past the
-/// 8th eligible Good for that Origin — a documented limit, not a crash.
-///
-/// (Was `64` pre-Story-4.1, matching optimizer.zig's mixedLoadFill stack
-/// buffer — no longer relevant here since this module never calls
-/// mixedLoadFill.)
+/// Maximum number of eligible Goods swept per Origin. Real data has 5 Goods
+/// per Outpost; this gives 60% headroom. A hand-edited `goods.json` that
+/// exceeds this bound simply stops being swept past the 8th eligible Good
+/// for that Origin — a documented limit, not a crash.
 const MAX_GOODS: usize = 8;
 
-/// One independently-computed Good × Threshold × Destination combination
-/// (Story 4.1). `reachable = false` means no owned Transport could carry any
+/// One independently-computed Good × Threshold × Destination combination.
+/// `reachable = false` means no owned Transport could carry any
 /// quantity of the Good, or the Destination itself has no usable route
 /// (including the trivial case of `destination_idx == origin_idx`) — the
 /// cell still exists in the matrix, it is never omitted.
@@ -29,7 +25,7 @@ pub const ThresholdCell = struct {
     ducats_per_min: f64,
 };
 
-/// Per-Origin sweep result (Story 4.1).
+/// Per-Origin sweep result.
 ///
 /// `cells[g][t][d]` holds the Good × Threshold × Destination combination for
 /// the `g`-th *eligible* Good swept at this Origin (insertion order, not the
@@ -54,8 +50,8 @@ const OwnedTransport = struct {
 
 /// Returns one optional OwnedTransport per TransportFlags field, checked
 /// explicitly — TransportFlags/TRANSPORT_STATS have no array or iterator.
-/// Public so engine/live.zig (Story 3.2) can reuse it instead of a third
-/// hand-enumeration of TransportFlags.
+/// Public so engine/live.zig can reuse it instead of a third hand-enumeration
+/// of TransportFlags.
 pub fn ownedTransports(flags: config_mod.TransportFlags) [8]?OwnedTransport {
     return .{
         if (flags.backpack) OwnedTransport{ .name = "Backpack", .transport = config_mod.TRANSPORT_STATS.backpack } else null,
@@ -206,21 +202,14 @@ pub fn sweepOrigin(
     return result;
 }
 
-/// Cache bookkeeping for AppState's per-Origin Threshold cache (Story 2.4;
-/// reshaped to heap-boxed pointers in Story 4.1 — `OriginResult` is now far
-/// larger than before, too large for AppState's plain stack-resident inline
-/// array). Pure, dvui-free logic extracted from `AppState.update()` so it can
-/// be unit tested without pulling in dvui/UI modules. Behavior:
-///
-/// 1. If `stale.*` is true, `destroy()` every non-null cached pointer via
-///    `allocator`, null every slot, and set `stale.* = false` — this happens
-///    unconditionally, even if `cfg` is null. No pointer is ever leaked.
-/// 2. Guard on `cfg`, `cfg.origin` non-empty, `goods_map`, and `route_matrix`
-///    all being present; return early otherwise (pre-wizard skip).
-/// 3. Find the current Origin's index via the OUTPOST_KEYS linear scan; if
-///    that slot is empty, `create()` a box, run `sweepOrigin` into it, and
-///    store the pointer. If the allocation itself fails, the slot is simply
-///    left `null` and retried on the next call (no crash, no partial state).
+/// Cache bookkeeping for AppState's per-Origin Threshold cache (heap-boxed —
+/// see ARCHITECTURE.md, AD-6). Pure, dvui-free logic extracted from
+/// `AppState.update()` so it can be unit tested without pulling in dvui/UI
+/// modules. On each call: destroys/nulls every slot unconditionally if
+/// `stale.*`; early-returns if `cfg`/`goods_map`/`route_matrix` aren't all
+/// present yet (pre-wizard skip); otherwise finds the current Origin's slot
+/// and, if empty, allocates and sweeps it. A failed allocation leaves the
+/// slot `null`, retried on the next call.
 pub fn updateCache(
     cache: *[12]?*OriginResult,
     stale: *bool,
@@ -721,8 +710,7 @@ test "sweepOrigin tradersSkiff transport matches TRANSPORT_STATS" {
     try std.testing.expectApproxEqAbs(@as(f64, 5760.0), cell.ducats_per_min, 0.01);
 }
 
-// ── updateCache tests (Story 2.4 Matrix Test Audit gap — rows 2, 3, 5; reshaped
-// to heap-boxed pointers + allocator param by Story 4.1) ───────────────────
+// ── updateCache tests (cache row coverage) ──────────────────────────────────
 
 /// A value real `sweepOrigin` output could never produce for the test configs
 /// below — used to detect whether updateCache left an existing slot untouched.

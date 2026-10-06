@@ -55,33 +55,26 @@ pub const AppState = struct {
     // `null` means "never calculated yet" or "cleared by an Origin/Config
     // change" (see handleOriginChange/update). `Some(LiveResults)` with
     // `count == 0` means Calculate was pressed but found no profitable
-    // combination — a distinct state from "not calculated" that Story 3.3's
-    // results rendering must tell apart.
+    // combination — a distinct state from "not calculated" that the results
+    // rendering must tell apart.
     live_results: ?live_engine.LiveResults = null,
 
-    // ── Threshold engine cache (Story 2.4; heap-boxed by Story 4.1) ──────────
     // One slot per Outpost (index matches OUTPOST_KEYS/config.zig order).
-    // `OriginResult` grew far larger with the per-Good matrix sweep (Story
-    // 4.1) than AppState's plain stack frame can hold inline, so each
-    // populated slot is a GPA-owned pointer instead of an inline value —
-    // `updateCache` (engine/threshold.zig) is solely responsible for
-    // `create()`-ing and `destroy()`-ing them.
+    // Heap-boxed, not inline — see ARCHITECTURE.md AD-6. `updateCache`
+    // (engine/threshold.zig) is solely responsible for `create()`-ing and
+    // `destroy()`-ing these.
     threshold_cache: [12]?*threshold_mod.OriginResult = [_]?*threshold_mod.OriginResult{null} ** 12,
     threshold_cache_stale: bool = true,
 
-    // ── Icon byte cache (Story 2.6) ────────────────────────────────────────────
     // Keyed by Good.image path (a stable slice owned by `goods`, live for the
     // lifetime of AppState). Values are allocator-owned file bytes, read from
-    // disk at most once per path — see iconBytes()/Design Notes for why.
+    // disk at most once per path — see iconBytes() for why.
     icon_cache: std.StringHashMap([]const u8),
 
-    // ── Icon texture cache (icon-texture-caching-performance-fix) ─────────────
-    // Keyed by the same Good.image path as icon_cache. Values are dvui GPU
-    // texture handles decoded once via Texture.fromImageFile — reused as
-    // ImageSource.texture (hash() always 0, no per-frame stbi_info_from_memory
-    // decode) at every dvui.image() call site. Destroyed in deinit() via the
-    // raw Backend.textureDestroy (not textureDestroyLater, which needs an
-    // active Window.begin/end that no longer exists by shutdown).
+    // Keyed the same way as icon_cache. Values are GPU texture handles
+    // decoded once via iconTexture() — see ARCHITECTURE.md's Icon Texture
+    // Caching section for why this second level exists and how it's torn
+    // down at shutdown.
     icon_textures: std.StringHashMap(dvui.Texture),
 
     // Keyed the same way, but tracks paths whose bytes decoded (stbi) with an
@@ -121,10 +114,9 @@ pub const AppState = struct {
         if (self.load_error) |err| {
             if (err.message_owned) self.allocator.free(err.message);
         }
-        // Every non-null threshold_cache slot is a GPA-owned box (Story 4.1)
-        // — destroy them all on shutdown, same convention as the icon cache
-        // below, so a full AppState lifecycle leaks nothing under
-        // std.testing.allocator.
+        // Every non-null threshold_cache slot is a GPA-owned box — destroy
+        // them all on shutdown, same convention as the icon cache below, so
+        // a full AppState lifecycle leaks nothing under std.testing.allocator.
         for (&self.threshold_cache) |*slot| {
             if (slot.*) |ptr| {
                 self.allocator.destroy(ptr);
@@ -149,14 +141,12 @@ pub const AppState = struct {
             }
         }
         self.icon_textures.deinit();
-        // Plain marker set — no values to free, just tear down the map.
         self.icon_decode_failed.deinit();
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn runStartupSequence(self: *AppState) void {
-        // 1. Load routes.json — required; on failure set load_error and return.
         if (routes_mod.loadRoutes(self.allocator, self.exe_dir)) |r| {
             self.routes = r;
             self.route_matrix = matrix_mod.build(r);
@@ -165,7 +155,6 @@ pub const AppState = struct {
             return;
         }
 
-        // 2. Load goods.json — required; on failure set load_error and return.
         if (goods_mod.loadGoods(self.allocator, self.exe_dir)) |g| {
             self.goods = g;
         } else |err| {
@@ -173,7 +162,7 @@ pub const AppState = struct {
             return;
         }
 
-        // 2.5. Load live_profits.json — optional; needs GoodsMap (just loaded
+        // Load live_profits.json — optional; needs GoodsMap (just loaded
         // above) for name->index resolution. Fail-soft (missing/corrupt file
         // = empty result, no wizard/error-dialog impact) is entirely handled
         // inside loadLiveProfits itself. Any entry naming an Origin,
@@ -184,7 +173,6 @@ pub const AppState = struct {
             applyLiveProfitEntries(&self.live_state.profits, &self.goods.?, entries);
         }
 
-        // 3. Load config.json — optional; null => show wizard placeholder.
         self.config = config_mod.loadConfig(self.allocator, self.exe_dir);
         if (self.config == null) {
             self.needs_wizard = true;
@@ -207,7 +195,6 @@ pub const AppState = struct {
     }
 
     fn retryAfterRestore(self: *AppState) void {
-        // Free the existing load_error before retrying.
         if (self.load_error) |err| {
             if (err.message_owned) self.allocator.free(err.message);
             self.load_error = null;
@@ -223,12 +210,12 @@ pub const AppState = struct {
     ///
     /// Staleness is set by settings.zig whenever a value-type Config field
     /// changes (transports, either Modifier, any Merchant Rating, Speed Bonus,
-    /// or Gear Discount). Switching the viewed Origin alone does not set it —
-    /// that is a cache read, not an invalidation trigger.
+    /// or Gear Discount — see ARCHITECTURE.md AD-5's invalidation table).
+    /// Switching the viewed Origin alone does not set it — that is a cache
+    /// read, not an invalidation trigger.
     pub fn update(self: *AppState) void {
-        // Read staleness before updateCache clears it — "Config changed" is
-        // exactly this existing signal (settings.zig:445-446), and it must
-        // also invalidate any Live Mode results computed under the old Config.
+        // Read staleness before updateCache clears it below — it must also
+        // invalidate any Live Mode results computed under the old Config.
         const was_stale = self.threshold_cache_stale;
         threshold_mod.updateCache(
             &self.threshold_cache,
@@ -272,25 +259,18 @@ pub const AppState = struct {
     /// read *or* the decode fails (e.g. a corrupt or non-image file at that
     /// path) — either way the caller falls back to name-only rendering.
     ///
-    /// The cache exists because `ImageSource.hash()` unconditionally calls
-    /// `imageSize()` for `.imageFile` sources, which invokes
-    /// `stbi_info_from_memory` (a real PNG-header decode) on every single
-    /// frame regardless of `iconBytes()`'s own raw-bytes cache. Handing back
-    /// a `dvui.Texture` lets call sites use `ImageSource.texture` instead,
-    /// whose `hash()` always returns 0 and skips both the decode and dvui's
-    /// own texture cache entirely. Only valid to call between `Window.begin`
-    /// and `Window.end` (true for every current caller — all 3 render inside
-    /// `render()`).
+    /// Why this cache exists at all, and the hash()/stbi_info_from_memory
+    /// mechanism behind it: see ARCHITECTURE.md's Icon Texture Caching
+    /// section. Only valid to call between `Window.begin` and `Window.end`
+    /// (true for every current caller — all 3 render inside `render()`).
     ///
     /// A decode failure is remembered in `icon_decode_failed` so a bad path
     /// short-circuits to null on every later call instead of re-attempting
-    /// the same failing decode every frame — otherwise a single corrupt icon
-    /// file would reintroduce the exact per-frame decode cost this cache
-    /// exists to eliminate, just on the failure path instead of the success
-    /// path. A `icon_textures.put` failure *after* a successful decode
-    /// destroys the just-created texture via `textureDestroyLater` (valid
-    /// here — always called between `Window.begin`/`end`) rather than
-    /// handing back a texture this struct can never track and destroy.
+    /// the same failing decode every frame. A `icon_textures.put` failure
+    /// *after* a successful decode destroys the just-created texture via
+    /// `textureDestroyLater` (valid here — always called between
+    /// `Window.begin`/`end`) rather than handing back a texture this struct
+    /// can never track and destroy.
     pub fn iconTexture(self: *AppState, image_path: []const u8) ?dvui.Texture {
         if (self.icon_textures.get(image_path)) |cached| return cached;
         if (self.icon_decode_failed.contains(image_path)) return null;
@@ -323,7 +303,6 @@ pub const AppState = struct {
     fn renderErrorDialog(self: *AppState) !void {
         const err = self.load_error.?;
 
-        // Modal floating window — blocks input to anything beneath it.
         var fw = dvui.floatingWindow(
             @src(),
             .{ .modal = true },
@@ -333,7 +312,6 @@ pub const AppState = struct {
 
         _ = dvui.windowHeader("Data Load Error", "", null);
 
-        // Error message text.
         dvui.label(@src(), "Failed to load: {s}", .{err.filename}, .{ .expand = .horizontal });
         dvui.label(@src(), "Error: {s}", .{err.message}, .{
             .expand = .horizontal,
@@ -345,7 +323,6 @@ pub const AppState = struct {
             defer hbox.deinit();
 
             if (dvui.button(@src(), "Restore Defaults", .{}, .{})) {
-                // Synchronously restore the missing/corrupt file and retry.
                 const restore_result: anyerror!void = switch (err.kind) {
                     .routes => routes_mod.restoreRoutes(self.allocator, self.exe_dir),
                     .goods => goods_mod.restoreGoods(self.allocator, self.exe_dir),
@@ -353,7 +330,6 @@ pub const AppState = struct {
                 if (restore_result) |_| {
                     self.retryAfterRestore();
                 } else |re| {
-                    // Replace the load error message with the restore failure.
                     if (self.load_error.?.message_owned) {
                         self.allocator.free(self.load_error.?.message);
                     }
@@ -380,7 +356,6 @@ pub const AppState = struct {
     fn renderMainArea(self: *AppState) !void {
         // ── Top bar: Origin dropdown + Settings button ────────────────────────
 
-        // Build dropdown entries: placeholder at index 0, outposts at 1..12.
         const placeholder: []const u8 = "— Select Origin —";
         var dropdown_entries: [13][]const u8 = undefined;
         dropdown_entries[0] = placeholder;
@@ -388,7 +363,6 @@ pub const AppState = struct {
             dropdown_entries[i + 1] = name;
         }
 
-        // Derive current dropdown index from config.origin each frame.
         var dropdown_idx: usize = 0;
         for (config_mod.OUTPOST_KEYS, 0..) |key, i| {
             if (std.mem.eql(u8, self.config.?.origin, key)) {
@@ -413,11 +387,9 @@ pub const AppState = struct {
                 &dropdown_idx,
                 .{ .min_size_content = .{ .w = 160 }, .margin = .{ .x = 4 } },
             )) {
-                // Selection changed — only act if user picked an actual outpost.
                 if (dropdown_idx != prev_idx and dropdown_idx > 0) {
                     try self.handleOriginChange(dropdown_idx - 1);
                 } else if (dropdown_idx == 0) {
-                    // User picked the placeholder; clear any stale error.
                     self.origin_error = null;
                 }
             }
@@ -430,7 +402,6 @@ pub const AppState = struct {
                 });
             }
 
-            // Push Settings button to the right.
             {
                 var spacer = dvui.box(@src(), .{}, .{ .expand = .horizontal });
                 defer spacer.deinit();
@@ -499,14 +470,14 @@ pub const AppState = struct {
         // A threshold-add/remove error from the previous Origin is no longer
         // relevant once the Origin has changed.
         self.threshold_state.error_msg = null;
-        // Profit inputs are no longer Origin-specific-and-cleared (Story 3.4):
-        // switching Origin only changes which profits[origin_idx] slice the
-        // grid reads/writes. live_results still clears — it was computed
-        // under the old Origin's sweep and no longer applies.
+        // Profit inputs are not Origin-specific-and-cleared: switching Origin
+        // only changes which profits[origin_idx] slice the grid reads/writes.
+        // live_results still clears — it was computed under the old Origin's
+        // sweep and no longer applies.
         self.live_results = null;
-        // A save-write failure from the previous Origin is no longer relevant
-        // once the Origin has changed (same reasoning as threshold_state's
-        // error_msg reset above; review finding — this reset was missing).
+        // Same reasoning as threshold_state's error_msg reset above — a
+        // stale save-write failure from the previous Origin must not survive
+        // the switch.
         self.live_state.write_error = null;
     }
 
@@ -514,8 +485,8 @@ pub const AppState = struct {
     /// over the current Origin's Goods, Config, route matrix, and entered
     /// profits, storing the result into `live_results`. The only entry point
     /// into the Live engine — never auto-called from `update()`, only from
-    /// the Calculate button in ui/live.zig (manual trigger, AD-5 Level 3).
-    /// No-ops (leaves `live_results` untouched) if the app isn't fully
+    /// the Calculate button in ui/live.zig (manual trigger only; see
+    /// ARCHITECTURE.md AD-5). No-ops (leaves `live_results` untouched) if the app isn't fully
     /// loaded yet or no Origin is selected.
     pub fn calculateLive(self: *AppState) void {
         const cfg = self.config orelse return;
@@ -546,8 +517,8 @@ pub const AppState = struct {
     /// Persist `self.routes` to routes.json if it differs from `before`, then
     /// rebuild the route matrix and invalidate the threshold cache.
     /// No-ops (no write, no rebuild) if nothing changed this frame.
-    /// Keeps the engine rebuild (matrix_mod.build) out of ui/settings.zig
-    /// (AD-2/AD-4) — settings.zig only ever calls this method.
+    /// Keeps the engine rebuild (matrix_mod.build) out of ui/settings.zig —
+    /// settings.zig only ever calls this method (see ARCHITECTURE.md AD-2).
     pub fn saveRoutes(self: *AppState, before: RouteData) void {
         if (std.meta.eql(before, self.routes.?)) return;
 
@@ -563,12 +534,12 @@ pub const AppState = struct {
     }
 
     /// Persist `self.live_state.profits[idx]` to live_profits.json if it
-    /// differs from `before`, following `saveRoutes`'s exact convention:
-    /// diff-before-write (no-op if nothing changed this frame), and on write
-    /// failure revert just this Origin's slice and set `LiveState.write_error`.
-    /// Rebuilds the whole file from every Origin's current in-memory profits
-    /// (not just this Origin) since live_profits.json holds all 12 Origins in
-    /// one flat, name-keyed list (Design Notes).
+    /// differs from `before`, following the same snapshot/diff/revert
+    /// convention as `saveRoutes` (see ARCHITECTURE.md): no-op if nothing
+    /// changed this frame, and on write failure revert just this Origin's
+    /// slice and set `LiveState.write_error`. Rebuilds the whole file from
+    /// every Origin's current in-memory profits (not just this Origin) since
+    /// live_profits.json holds all 12 Origins in one flat, name-keyed list.
     pub fn saveLiveProfits(self: *AppState, idx: usize, before: [live.MAX_GOODS][12]f32) void {
         if (std.meta.eql(before, self.live_state.profits[idx])) return;
 
@@ -583,7 +554,7 @@ pub const AppState = struct {
     /// Walks all 12 Origins x each Origin's real GoodsMap slice x 12
     /// Destinations, emitting one entry per nonzero cell, and writes the
     /// resulting list to live_profits.json. Blank fields (profit == 0.0) are
-    /// never written (Boundaries). Origin/Good/Destination strings referenced
+    /// never written. Origin/Good/Destination strings referenced
     /// here are owned by OUTPOST_KEYS/GoodsMap (both outlive this call), so no
     /// duplication/freeing is needed for the entries themselves.
     ///
@@ -601,9 +572,9 @@ pub const AppState = struct {
             const origin_goods = self.goods.?.get(origin_key) orelse continue;
             for (origin_goods, 0..) |good, g_idx| {
                 // Same MAX_GOODS bound applyLiveProfitEntries enforces on the
-                // load side (Story 3.4 review) — profits[o_idx] is only
-                // MAX_GOODS wide, so a GoodsMap slice beyond that would
-                // otherwise index out of bounds here.
+                // load side — profits[o_idx] is only MAX_GOODS wide, so a
+                // GoodsMap slice beyond that would otherwise index out of
+                // bounds here.
                 if (g_idx >= live.MAX_GOODS) break;
                 for (config_mod.OUTPOST_KEYS, 0..) |dest_key, d_idx| {
                     if (d_idx == o_idx) continue;
@@ -629,8 +600,8 @@ pub const AppState = struct {
     /// position, persists the config, and marks the threshold cache stale.
     /// On any rejection, `self.config` is left untouched and
     /// `threshold_state.error_msg` is set; on success it is cleared.
-    /// Mirrors the `handleOriginChange`/`saveRoutes` setter convention (AD-4)
-    /// — ui/threshold.zig never calls config_mod.writeConfig directly.
+    /// Mirrors the `handleOriginChange`/`saveRoutes` setter convention —
+    /// ui/threshold.zig never calls config_mod.writeConfig directly.
     pub fn addThreshold(self: *AppState, value: u32) enum { ok, invalid, duplicate, full } {
         var cfg = self.config.?;
         const count = cfg.thresholdCount;
@@ -722,7 +693,7 @@ pub const AppState = struct {
     }
 };
 
-// ── live_profits load-time name->index resolution (Story 3.4) ──────────────
+// ── live_profits load-time name->index resolution ───────────────────────────
 // Free functions (not AppState methods) so they're directly unit-testable
 // without constructing a full AppState.
 
@@ -739,8 +710,8 @@ fn indexOfOutpost(name: []const u8) ?usize {
 /// Resolves each loaded live_profits.json entry's origin/good/destination
 /// NAME strings against OUTPOST_KEYS/GoodsMap and fills the matching
 /// `profits[origin_idx][good_idx][dest_idx]` cell. Any entry naming an
-/// Origin, Destination or Good no longer present (stale, per the I/O matrix)
-/// is dropped silently — the rest still load normally.
+/// Origin, Destination or Good no longer present is dropped silently — the
+/// rest still load normally.
 fn applyLiveProfitEntries(
     profits: *[12][live.MAX_GOODS][12]f32,
     goods: *const GoodsMap,
@@ -767,7 +738,7 @@ fn applyLiveProfitEntries(
     }
 }
 
-// ── saveRoutes tests (Story 2.5) ─────────────────────────────────────────────
+// ── saveRoutes tests ──────────────────────────────────────────────────────────
 // Directly construct a minimal AppState — no AppState.init / real dvui window
 // needed, since saveRoutes touches only allocator, exe_dir, routes,
 // route_matrix, settings_state.write_error and threshold_cache_stale.
@@ -899,7 +870,7 @@ test "saveRoutes failure: write error reverts routes and sets write_error, leave
     try std.testing.expect(state.threshold_cache_stale == false);
 }
 
-// ── addThreshold/removeThreshold tests (Story 2.7) ──────────────────────────
+// ── addThreshold/removeThreshold tests ───────────────────────────────────────
 // Directly construct a minimal AppState — no AppState.init / real dvui window
 // needed, since these setters touch only allocator, exe_dir, config,
 // threshold_state.error_msg and threshold_cache_stale. Built the same way as
@@ -1066,13 +1037,13 @@ test "addThreshold at capacity: rejected with maximum-reached error" {
     var cfg = Config{};
     var i: u32 = 0;
     while (i < config_mod.MAX_THRESHOLDS) : (i += 1) {
-        cfg.thresholds[i] = (i + 1) * 10; // 10, 20, .. 320 — all distinct
+        cfg.thresholds[i] = (i + 1) * 10;
     }
     cfg.thresholdCount = config_mod.MAX_THRESHOLDS;
 
     var state = makeThresholdTestState(allocator, exe_dir, cfg);
 
-    const outcome = state.addThreshold(5000); // not a duplicate, but no room
+    const outcome = state.addThreshold(5000);
     try std.testing.expect(outcome == .full);
     try std.testing.expectEqual(@as(u8, config_mod.MAX_THRESHOLDS), state.config.?.thresholdCount);
     try std.testing.expectEqualStrings("Maximum thresholds reached", state.threshold_state.error_msg.?);
@@ -1227,7 +1198,7 @@ test "removeThreshold write failure: config left unchanged, error_msg set to @er
     try std.testing.expect(state.threshold_cache_stale == false);
 }
 
-// ── Settings button toggle (spec-destination-order-settings-toggle-and-tabs) ──
+// ── Settings button toggle ───────────────────────────────────────────────────
 // Guards the toggle-to-close behavior: `self.show_settings = !self.show_settings`
 // in renderMainArea's Settings button handler. A regression back to the old
 // `self.show_settings = true` (open-only, never closes) would pass every other
@@ -1293,7 +1264,6 @@ test "iconBytes: reads and caches a file with a stable pointer; missing file ret
     const second = state.iconBytes("static/img/good/test.png").?;
     try std.testing.expect(first.ptr == second.ptr);
 
-    // Missing file: falls back to null, never crashes.
     const missing = state.iconBytes("static/img/good/does_not_exist.png");
     try std.testing.expect(missing == null);
 
@@ -1312,7 +1282,7 @@ test "iconBytes: reads and caches a file with a stable pointer; missing file ret
 
 // ── handleOriginChange ──────────────────────────────────────────────────────
 
-test "handleOriginChange does NOT clear live_state.profits (Story 3.4)" {
+test "handleOriginChange does NOT clear live_state.profits" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -1326,14 +1296,14 @@ test "handleOriginChange does NOT clear live_state.profits (Story 3.4)" {
 
     var state = makeThresholdTestState(allocator, exe_dir, cfg);
 
-    state.live_state.profits[0][0][0] = 42.0; // Origin 0 (tirChonaill)
-    state.live_state.profits[0][5][3] = 7.5; // Origin 0 (tirChonaill)
-    state.live_state.profits[1][63][11] = 1.0; // Origin 1 (dunbarton) — the Origin being switched TO
+    state.live_state.profits[0][0][0] = 42.0;
+    state.live_state.profits[0][5][3] = 7.5;
+    state.live_state.profits[1][63][11] = 1.0;
 
     try state.handleOriginChange(1); // switch to "dunbarton"
 
-    // Story 3.4 reverses Story 3.1: switching Origin must leave every
-    // Origin's stored profits untouched — nothing is cleared in memory.
+    // Switching Origin must leave every Origin's stored profits untouched —
+    // nothing is cleared in memory.
     try std.testing.expectEqual(@as(f32, 42.0), state.live_state.profits[0][0][0]);
     try std.testing.expectEqual(@as(f32, 7.5), state.live_state.profits[0][5][3]);
     try std.testing.expectEqual(@as(f32, 1.0), state.live_state.profits[1][63][11]);
@@ -1341,9 +1311,9 @@ test "handleOriginChange does NOT clear live_state.profits (Story 3.4)" {
     allocator.free(state.config.?.origin);
 }
 
-// ── live_results clearing (Story 3.2 Matrix Test Audit: I/O row 4) ──────────
+// ── live_results clearing ─────────────────────────────────────────────────────
 
-test "handleOriginChange clears live_results (Story 3.2)" {
+test "handleOriginChange clears live_results" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -1365,12 +1335,9 @@ test "handleOriginChange clears live_results (Story 3.2)" {
     allocator.free(state.config.?.origin);
 }
 
-test "handleOriginChange clears threshold_state.error_msg and live_state.write_error (review finding regression guard)" {
-    // A prior review found that the live_state.write_error reset was
-    // missing from handleOriginChange (see the "review finding" comment on
-    // that reset in the function itself). This test guards against either
-    // reset regressing again: both are stale-error state from the previous
-    // Origin and must not survive an Origin switch.
+test "handleOriginChange clears threshold_state.error_msg and live_state.write_error (regression guard)" {
+    // Both are stale-error state from the previous Origin and must not
+    // survive an Origin switch.
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -1394,7 +1361,7 @@ test "handleOriginChange clears threshold_state.error_msg and live_state.write_e
     allocator.free(state.config.?.origin);
 }
 
-test "update() clears live_results when threshold_cache_stale was true (Story 3.2)" {
+test "update() clears live_results when threshold_cache_stale was true" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -1416,7 +1383,7 @@ test "update() clears live_results when threshold_cache_stale was true (Story 3.
     try std.testing.expect(state.threshold_cache_stale == false);
 }
 
-test "update() leaves live_results untouched when threshold_cache_stale is false (Story 3.2)" {
+test "update() leaves live_results untouched when threshold_cache_stale is false" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -1438,7 +1405,7 @@ test "update() leaves live_results untouched when threshold_cache_stale is false
     try std.testing.expectEqual(@as(u8, 3), state.live_results.?.count);
 }
 
-// ── calculateLive() success path (Story 3.2 Matrix Test Audit) ─────────────
+// ── calculateLive() success path ─────────────────────────────────────────────
 // Unlike the live_results tests above (which hand-construct live_results and
 // only check clearing/null behavior), this drives AppState's actual entry
 // point into the Live engine — mirroring engine/live.zig's own
@@ -1480,7 +1447,6 @@ test "calculateLive happy path: populates live_results via the real AppState ent
     defer gm.deinit();
     try gm.put("tirChonaill", good_slice[0..]);
 
-    // RouteMatrix: only tirChonaill(0)<->dunbarton(1) is reachable.
     var matrix = std.mem.zeroes(RouteMatrix);
     matrix.baseTimes[0][1] = 100;
     matrix.baseTimes[1][0] = 100;
@@ -1500,7 +1466,7 @@ test "calculateLive happy path: populates live_results via the real AppState ent
         .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
-    state.live_state.profits[0][0][1] = 50.0; // Origin 0 (tirChonaill), TestGood @ dunbarton: 50 Ducats/unit
+    state.live_state.profits[0][0][1] = 50.0;
 
     state.calculateLive();
 
@@ -1520,7 +1486,7 @@ test "calculateLive happy path: populates live_results via the real AppState ent
     try std.testing.expectApproxEqAbs(@as(f64, 546.0), row.ducats_per_min, 0.1);
 }
 
-// ── applyLiveProfitEntries (Story 3.4 startup apply) ────────────────────────
+// ── applyLiveProfitEntries ────────────────────────────────────────────────────
 // Free-function tests — no AppState/dvui needed, just a GoodsMap fixture and
 // a raw profits array, mirroring engine/live.zig's own pure-function test
 // style.
@@ -1559,31 +1525,27 @@ test "applyLiveProfitEntries: entries naming an unknown Origin/Destination/Good 
     var profits = [_][live.MAX_GOODS][12]f32{[_][12]f32{[_]f32{0.0} ** 12} ** live.MAX_GOODS} ** 12;
 
     const entries = [_]live_profits_mod.LiveProfitEntry{
-        // Unknown Origin — dropped.
         .{ .origin = "notAnOutpost", .good = "TestGood", .destination = "dunbarton", .profit = 1 },
-        // Unknown Destination — dropped.
         .{ .origin = "tirChonaill", .good = "TestGood", .destination = "notAnOutpost", .profit = 2 },
-        // Unknown Good (not in tirChonaill's GoodsMap slice) — dropped.
         .{ .origin = "tirChonaill", .good = "NoSuchGood", .destination = "dunbarton", .profit = 3 },
-        // Valid entry — must still apply despite the three stale ones above.
         .{ .origin = "tirChonaill", .good = "TestGood", .destination = "bangor", .profit = 4 },
     };
 
     applyLiveProfitEntries(&profits, &gm, &entries);
 
     // Nothing but the one valid cell was ever written.
-    try std.testing.expectEqual(@as(f32, 4.0), profits[0][0][2]); // tirChonaill=0, TestGood=0, bangor=2
+    try std.testing.expectEqual(@as(f32, 4.0), profits[0][0][2]);
     for (profits, 0..) |origin_slice, o| {
         for (origin_slice, 0..) |good_row, g| {
             for (good_row, 0..) |v, d| {
-                if (o == 0 and g == 0 and d == 2) continue; // the one expected nonzero cell
+                if (o == 0 and g == 0 and d == 2) continue;
                 try std.testing.expectEqual(@as(f32, 0.0), v);
             }
         }
     }
 }
 
-// ── saveLiveProfits (Story 3.4) ──────────────────────────────────────────────
+// ── saveLiveProfits ───────────────────────────────────────────────────────────
 // Mirrors saveRoutes's exact 3-test pattern (success/no-op/failure).
 
 test "saveLiveProfits success: writes to disk, clears write_error" {
@@ -1615,8 +1577,8 @@ test "saveLiveProfits success: writes to disk, clears write_error" {
         .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
-    const before = state.live_state.profits[0]; // all-zero snapshot
-    state.live_state.profits[0][0][1] = 25.0; // tirChonaill/TestGood @ dunbarton
+    const before = state.live_state.profits[0];
+    state.live_state.profits[0][0][1] = 25.0;
 
     state.saveLiveProfits(0, before);
 
@@ -1661,7 +1623,7 @@ test "saveLiveProfits rounds a fractional profit and saturates an out-of-u16-ran
         .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
-    const before = state.live_state.profits[0]; // all-zero snapshot
+    const before = state.live_state.profits[0];
     state.live_state.profits[0][0][1] = 12.6; // GoodA @ dunbarton — rounds to 13
     state.live_state.profits[0][1][1] = 100_000.0; // GoodB @ dunbarton — saturates to u16 max
 
@@ -1712,7 +1674,7 @@ test "saveLiveProfits no-op: unchanged slice triggers no write" {
         .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
-    const before = state.live_state.profits[0]; // identical to current — before == current
+    const before = state.live_state.profits[0];
 
     state.saveLiveProfits(0, before);
 
@@ -1758,7 +1720,7 @@ test "saveLiveProfits failure: write error reverts the Origin's slice and sets w
         .icon_decode_failed = std.StringHashMap(void).init(allocator),
     };
 
-    const before = state.live_state.profits[0]; // all-zero snapshot
+    const before = state.live_state.profits[0];
     state.live_state.profits[0][0][1] = 25.0;
 
     state.saveLiveProfits(0, before);
@@ -1770,7 +1732,7 @@ test "saveLiveProfits failure: write error reverts the Origin's slice and sets w
     try std.testing.expect(state.live_state.write_error != null);
 }
 
-// ── runStartupSequence live_profits wiring (Story 3.4 review finding) ──────
+// ── runStartupSequence live_profits wiring ───────────────────────────────────
 // Every other AppState test in this file hand-builds an AppState struct
 // literal, bypassing init()/runStartupSequence() entirely. applyLiveProfitEntries
 // is otherwise only exercised as a free function with a hand-built profits
@@ -1779,7 +1741,7 @@ test "saveLiveProfits failure: write error reverts the Origin's slice and sets w
 // call order relative to the goods load). This test closes that gap by going
 // through AppState.init() exactly as main.zig does.
 
-test "AppState.init loads live_profits.json and populates live_state.profits (Story 3.4 startup wiring)" {
+test "AppState.init loads live_profits.json and populates live_state.profits (startup wiring)" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -1787,7 +1749,6 @@ test "AppState.init loads live_profits.json and populates live_state.profits (St
     const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(exe_dir);
 
-    // routes.json: any well-formed RouteData round-trips via the real writer.
     try routes_mod.writeRoutes(std.mem.zeroes(RouteData), allocator, exe_dir);
 
     // goods.json: minimal but real, in loadGoods's expected schema (object of
@@ -1800,14 +1761,14 @@ test "AppState.init loads live_profits.json and populates live_state.profits (St
     });
 
     // live_profits.json: one entry that should resolve cleanly once goods.json
-    // has loaded (tirChonaill=Origin 0, TestGood=index 0, dunbarton=Destination 1).
+    // has loaded.
     const entries = [_]live_profits_mod.LiveProfitEntry{
         .{ .origin = "tirChonaill", .good = "TestGood", .destination = "dunbarton", .profit = 77 },
     };
     try live_profits_mod.writeLiveProfits(&entries, allocator, exe_dir);
 
     // No config.json — needs_wizard is expected true; live_profits loading
-    // must not depend on config having loaded (it runs before step 3).
+    // must not depend on config.json having loaded (it runs before that).
     var state = AppState.init(allocator, exe_dir);
     defer state.deinit(null);
 
@@ -1815,7 +1776,7 @@ test "AppState.init loads live_profits.json and populates live_state.profits (St
     try std.testing.expectEqual(@as(f32, 77.0), state.live_state.profits[0][0][1]);
 }
 
-// ── threshold_cache leak check (Story 4.1 review finding) ──────────────────
+// ── threshold_cache leak check ────────────────────────────────────────────────
 // Every other AppState test that exercises `.update()` uses
 // `makeThresholdTestState` (goods=null, route_matrix=null), so `updateCache`
 // always guard-clauses out before ever allocating; every test that calls
@@ -1828,7 +1789,7 @@ test "AppState.init loads live_profits.json and populates live_state.profits (St
 // actually `allocator.create()`s a threshold_cache slot, then relies on
 // `std.testing.allocator`'s leak detector (checked at process exit) to catch
 // any regression in the matching `destroy()` inside `.deinit()`.
-test "AppState.deinit() frees a real threshold_cache pointer created via update() (Story 4.1 leak check)" {
+test "AppState.deinit() frees a real threshold_cache pointer created via update() (leak check)" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -1836,7 +1797,6 @@ test "AppState.deinit() frees a real threshold_cache pointer created via update(
     const exe_dir = try tmp.dir.realpathAlloc(allocator, ".");
     defer allocator.free(exe_dir);
 
-    // routes.json: any well-formed RouteData round-trips via the real writer.
     try routes_mod.writeRoutes(std.mem.zeroes(RouteData), allocator, exe_dir);
 
     // goods.json: a real, parsed (not hand-built) Good at tirChonaill, so
@@ -1868,6 +1828,4 @@ test "AppState.deinit() frees a real threshold_cache pointer created via update(
     state.update();
 
     try std.testing.expect(state.threshold_cache[0] != null);
-    // state.deinit() (deferred above) must destroy() this exact pointer via
-    // the same allocator that created it.
 }

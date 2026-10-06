@@ -25,7 +25,6 @@ pub fn build(b: *std.Build) void {
     const dx11_mod = dvui_dep.module("dx11");
     exe.root_module.addImport("dx11-backend", dx11_mod);
 
-    // Link Windows system libraries required by DX11
     exe.linkSystemLibrary("d3d11");
     exe.linkSystemLibrary("dxgi");
     exe.linkSystemLibrary("dxguid");
@@ -48,7 +47,6 @@ pub fn build(b: *std.Build) void {
     const install_routes = b.addInstallFile(b.path("assets/routes.json"), "bin/routes.json");
     b.getInstallStep().dependOn(&install_routes.step);
 
-    // Install static/ as a subdirectory of the exe directory (for Good icons).
     const install_static = b.addInstallDirectory(.{
         .source_dir = b.path("static"),
         .install_dir = .bin,
@@ -113,7 +111,7 @@ pub fn build(b: *std.Build) void {
     const run_threshold_tests = b.addRunArtifact(threshold_tests);
     test_step.dependOn(&run_threshold_tests.step);
 
-    // `zig build test` — run Live Mode calculation engine unit tests (Story 3.2)
+    // `zig build test` — run Live Mode calculation engine unit tests
     const live_tests = b.addTest(.{
         .root_source_file = b.path("src/engine/live.zig"),
         .target = target,
@@ -148,7 +146,7 @@ pub fn build(b: *std.Build) void {
     // such named-module imports are a separate package boundary, so their
     // own `test` blocks are never swept into the importing root's test
     // binary. Without its own root here, goods.zig's tests silently never
-    // ran under `zig build test` despite compiling cleanly (review finding).
+    // ran under `zig build test` despite compiling cleanly.
     const goods_tests = b.addTest(.{
         .root_source_file = b.path("src/data/goods.zig"),
         .target = target,
@@ -161,8 +159,7 @@ pub fn build(b: *std.Build) void {
     // `zig build test` — run config data-layer unit tests. Same gap as
     // goods.zig immediately above: config.zig was previously only ever
     // reached as a named cross-directory import ("../data/config.zig"),
-    // so its own `test` blocks never ran under `zig build test` either
-    // (review finding).
+    // so its own `test` blocks never ran under `zig build test` either.
     const config_tests = b.addTest(.{
         .root_source_file = b.path("src/data/config.zig"),
         .target = target,
@@ -171,8 +168,8 @@ pub fn build(b: *std.Build) void {
     const run_config_tests = b.addRunArtifact(config_tests);
     test_step.dependOn(&run_config_tests.step);
 
-    // `zig build test` — run live_profits data-layer unit tests (Story 3.4).
-    // No embedded_assets import needed — unlike routes.zig/goods.zig, this
+    // `zig build test` — run live_profits data-layer unit tests. No
+    // embedded_assets import needed — unlike routes.zig/goods.zig, this
     // file has no shipped default and is absent until the first save.
     const live_profits_tests = b.addTest(.{
         .root_source_file = b.path("src/data/live_profits.zig"),
@@ -182,8 +179,7 @@ pub fn build(b: *std.Build) void {
     const run_live_profits_tests = b.addRunArtifact(live_profits_tests);
     test_step.dependOn(&run_live_profits_tests.step);
 
-    // `zig build test` — run AppState orchestration unit tests (Story 2.5:
-    // AppState.saveRoutes success/no-op/failure paths).
+    // `zig build test` — run AppState orchestration unit tests.
     const app_tests = b.addTest(.{
         .root_source_file = b.path("src/ui/app.zig"),
         .target = target,
@@ -198,8 +194,8 @@ pub fn build(b: *std.Build) void {
     app_tests.root_module.addImport("../data/config.zig", config_mod);
     app_tests.root_module.addImport("../data/goods.zig", goods_mod);
     app_tests.root_module.addImport("../data/routes.zig", routes_mod);
-    // app.zig also imports "../data/live_profits.zig" directly (Story 3.4) —
-    // register it the same way as routes_mod. It only imports "std", so no
+    // app.zig also imports "../data/live_profits.zig" directly — register it
+    // the same way as routes_mod. It only imports "std", so no
     // further sibling-import registration is needed for it.
     const live_profits_mod = b.createModule(.{
         .root_source_file = b.path("src/data/live_profits.zig"),
@@ -244,7 +240,7 @@ pub fn build(b: *std.Build) void {
     });
     app_tests.root_module.addImport("../engine/matrix.zig", engine_matrix_mod);
     app_tests.root_module.addImport("../engine/threshold.zig", engine_threshold_mod);
-    // app.zig also imports "../engine/live.zig" (Story 3.2) directly, for
+    // app.zig also imports "../engine/live.zig" directly, for
     // AppState.calculateLive(). engine/live.zig itself reaches
     // engine/matrix.zig, engine/optimizer.zig and engine/threshold.zig via
     // its own sibling imports — override all three to the exact same module

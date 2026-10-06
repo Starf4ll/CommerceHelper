@@ -1,4 +1,4 @@
-// engine/live.zig — Live Mode calculation engine (Story 3.2)
+// engine/live.zig — Live Mode calculation engine
 const std = @import("std");
 const config_mod = @import("../data/config.zig");
 const goods_mod = @import("../data/goods.zig");
@@ -7,10 +7,9 @@ const optimizer_mod = @import("optimizer.zig");
 const threshold_mod = @import("threshold.zig");
 
 /// Maximum number of distinct Goods supported per Origin sweep. Real data
-/// has 5 Goods per Outpost; this gives generous headroom. Historically
-/// mirrored threshold.zig's own MAX_GOODS, but that bound was lowered to 8
-/// in Story 4.1 for a different reason (per-Origin eligible-Good cap) — the
-/// two no longer need to match.
+/// has 5 Goods per Outpost; this gives generous headroom. Deliberately
+/// independent of threshold.zig's own (lower) per-Origin eligible-Good cap —
+/// the two serve different purposes and need not match.
 const MAX_GOODS: usize = 64;
 
 /// Maximum rows kept in a calculate() result — top 10 by Ducats/min.
@@ -66,8 +65,8 @@ fn blankResult() LiveResult {
 }
 
 /// Sweeps every Destination × eligible primary Good × owned Transport
-/// combination, keyed on real per-Good/per-Destination profit (Story 3.1's
-/// `LiveState.profits`) instead of threshold.zig's uniform Threshold value,
+/// combination, keyed on real per-Good/per-Destination profit
+/// (`LiveState.profits`) instead of threshold.zig's uniform Threshold value,
 /// and keeps a running top-10 by Ducats/min. Pure: no allocator, no I/O, no
 /// side effects. Mirrors threshold.zig's sweepOrigin structurally (stack
 /// buffers, module-private helpers, reused optimizer functions).

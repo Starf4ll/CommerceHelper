@@ -72,7 +72,6 @@ fn parseGoods(allocator: std.mem.Allocator, text: []const u8) !GoodsMap {
             if (item != .object) return error.BadType;
             const obj = item.object;
 
-            // String fields — check key presence and tag before accessing.
             const name_val = if (obj.get("name")) |v| v else return error.MissingField;
             if (name_val != .string) return error.BadType;
             const desc_val = if (obj.get("description")) |v| v else return error.MissingField;
@@ -80,7 +79,6 @@ fn parseGoods(allocator: std.mem.Allocator, text: []const u8) !GoodsMap {
             const image_val = if (obj.get("image")) |v| v else return error.MissingField;
             if (image_val != .string) return error.BadType;
 
-            // Integer fields — check key presence, tag, then cast safely.
             const weight_val = if (obj.get("weight")) |v| v else return error.MissingField;
             if (weight_val != .integer) return error.BadType;
             const qty_val = if (obj.get("quantityPerSlot")) |v| v else return error.MissingField;
@@ -124,7 +122,6 @@ fn parseGoods(allocator: std.mem.Allocator, text: []const u8) !GoodsMap {
     return map;
 }
 
-/// Free all memory owned by a GoodsMap produced by loadGoods.
 pub fn deinitGoodsMap(map: *GoodsMap, allocator: std.mem.Allocator) void {
     var it = map.iterator();
     while (it.next()) |entry| {
@@ -139,7 +136,6 @@ pub fn deinitGoodsMap(map: *GoodsMap, allocator: std.mem.Allocator) void {
     map.deinit();
 }
 
-/// Write the embedded default goods.json to exe_dir/goods.json.
 pub fn restoreGoods(allocator: std.mem.Allocator, exe_dir: []const u8) !void {
     const out_path = try std.fs.path.join(allocator, &.{ exe_dir, "goods.json" });
     defer allocator.free(out_path);

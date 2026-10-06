@@ -13,18 +13,18 @@ pub const RouteMatrix = struct {
 //   4=taillteann   5=tara       6=cobh       7=belvast
 //   8=qilla        9=filia      10=cor       11=vales
 
-const TC  = 0; // tirChonaill
-const DUN = 1; // dunbarton
-const BAN = 2; // bangor
-const EMA = 3; // emainMacha
-const TAI = 4; // taillteann
-const TAR = 5; // tara
-const COB = 6; // cobh
-const BEL = 7; // belvast
-const QIL = 8; // qilla
-const FIL = 9; // filia
-const COR = 10; // cor
-const VAL = 11; // vales
+const TC  = 0;
+const DUN = 1;
+const BAN = 2;
+const EMA = 3;
+const TAI = 4;
+const TAR = 5;
+const COB = 6;
+const BEL = 7;
+const QIL = 8;
+const FIL = 9;
+const COR = 10;
+const VAL = 11;
 
 comptime {
     // Enforced link for the "Must match OUTPOST_KEYS" comment above — if
@@ -73,7 +73,6 @@ pub fn build(route_data: routes_mod.RouteData) RouteMatrix {
     const pc = r.boats.portConnous;
 
     // ── R1: Uladh↔Uladh direct land routes ───────────────────────────────────
-    // tirChonaill (0) with each other Uladh outpost
     set(&m, TC, DUN, r.tirChonaill.dunbarton,  0);
     set(&m, TC, BAN, r.tirChonaill.bangor,      0);
     set(&m, TC, COB, r.tirChonaill.cobh,        0);
@@ -81,34 +80,27 @@ pub fn build(route_data: routes_mod.RouteData) RouteMatrix {
     set(&m, TC, EMA, r.tirChonaill.emainMacha,  0);
     set(&m, TC, TAI, r.tirChonaill.taillteann,  0);
 
-    // dunbarton (1) with remaining Uladh outposts
     set(&m, DUN, BAN, r.dunbarton.bangor,      0);
     set(&m, DUN, COB, r.dunbarton.cobh,        0);
     set(&m, DUN, TAR, r.dunbarton.tara,        0);
     set(&m, DUN, EMA, r.dunbarton.emainMacha,  0);
     set(&m, DUN, TAI, r.dunbarton.taillteann,  0);
 
-    // bangor (2) with remaining Uladh outposts
     set(&m, BAN, COB, r.bangor.cobh,        0);
     set(&m, BAN, TAR, r.bangor.tara,        0);
     set(&m, BAN, EMA, r.bangor.emainMacha,  0);
     set(&m, BAN, TAI, r.bangor.taillteann,  0);
 
-    // cobh (3) with remaining Uladh outposts
     set(&m, COB, TAR, r.cobh.tara,        0);
     set(&m, COB, EMA, r.cobh.emainMacha,  0);
     set(&m, COB, TAI, r.cobh.taillteann,  0);
 
-    // tara (4) with remaining Uladh outposts
     set(&m, TAR, EMA, r.tara.emainMacha,  0);
     set(&m, TAR, TAI, r.tara.taillteann,  0);
 
-    // emainMacha (5) with remaining
     set(&m, EMA, TAI, r.emainMacha.taillteann, 0);
 
     // ── R2: Uladh↔Belvast via portBelvast ────────────────────────────────────
-    // baseTimes = outpost→cobh + portBelvast.fromCobh + portBelvast.toBelvast
-    // boatTimes = portBelvast.wait + portBelvast.travel
     const boat_bel: u32 = pb.wait + pb.travel;
     const bel_base_cobh: u32 = pb.fromCobh + pb.toBelvast; // walk legs: Cobh→dock + dock→Belvast town
     set(&m, TC,  BEL, r.tirChonaill.cobh + bel_base_cobh, boat_bel);
@@ -120,8 +112,6 @@ pub fn build(route_data: routes_mod.RouteData) RouteMatrix {
     set(&m, TAI, BEL, r.cobh.taillteann  + bel_base_cobh, boat_bel);
 
     // ── R3: Uladh↔Qilla via portQilla ────────────────────────────────────────
-    // baseTimes = outpost→cobh + portQilla.fromCobh + portQilla.toQilla
-    // boatTimes = portQilla.wait + portQilla.travel
     const boat_qil: u32 = pq.wait + pq.travel;
     const qil_base_cobh: u32 = pq.fromCobh + pq.toQilla;
     set(&m, TC,  QIL, r.tirChonaill.cobh + qil_base_cobh, boat_qil);
@@ -133,8 +123,6 @@ pub fn build(route_data: routes_mod.RouteData) RouteMatrix {
     set(&m, TAI, QIL, r.cobh.taillteann  + qil_base_cobh, boat_qil);
 
     // ── R4: Uladh↔Cor via portQilla (all Uladh except Bangor — see R5) ───────
-    // baseTimes = outpost→cobh + portQilla.fromCobh + portQilla.toCor
-    // boatTimes = portQilla.wait + portQilla.travel
     const cor_qil_base_cobh: u32 = pq.fromCobh + pq.toCor;
     set(&m, TC,  COR, r.tirChonaill.cobh + cor_qil_base_cobh, boat_qil);
     set(&m, DUN, COR, r.dunbarton.cobh   + cor_qil_base_cobh, boat_qil);
@@ -144,18 +132,12 @@ pub fn build(route_data: routes_mod.RouteData) RouteMatrix {
     set(&m, TAI, COR, r.cobh.taillteann  + cor_qil_base_cobh, boat_qil);
 
     // ── R5: Bangor↔Cor via portConnous ───────────────────────────────────────
-    // baseTimes = portConnous.fromBangor + portConnous.toCor
-    // boatTimes = portConnous.wait + portConnous.travel
     set(&m, BAN, COR, pc.fromBangor + pc.toCor, pc.wait + pc.travel);
 
     // ── R6: Belvast↔Qilla shortcut ───────────────────────────────────────────
-    // baseTimes = portBelvast.toBelvast + portBelvast.belvastBoatToQillaBoat + portQilla.toQilla
-    // boatTimes = portQilla.wait + portQilla.travel
     set(&m, BEL, QIL, pb.toBelvast + pb.belvastBoatToQillaBoat + pq.toQilla, boat_qil);
 
     // ── R7: Belvast↔Cor shortcut ─────────────────────────────────────────────
-    // baseTimes = portBelvast.toBelvast + portBelvast.belvastBoatToQillaBoat + portQilla.toCor
-    // boatTimes = portQilla.wait + portQilla.travel
     set(&m, BEL, COR, pb.toBelvast + pb.belvastBoatToQillaBoat + pq.toCor, boat_qil);
 
     // ── R8: Iria↔Iria direct land routes ─────────────────────────────────────
@@ -167,8 +149,6 @@ pub fn build(route_data: routes_mod.RouteData) RouteMatrix {
     set(&m, FIL, COR, r.filia.cor,   0);
 
     // ── R9: Uladh↔Vales via portSella (Bangor departure) ────────────────────
-    // baseTimes = outpost→bangor + portSella.fromBangor + portSella.toVales
-    // boatTimes = portSella.wait + portSella.travel
     const boat_sel: u32 = ps.wait + ps.travel;
     const val_sel_base_ban: u32 = ps.fromBangor + ps.toVales;
     set(&m, TC,  VAL, r.tirChonaill.bangor  + val_sel_base_ban, boat_sel);
@@ -180,8 +160,6 @@ pub fn build(route_data: routes_mod.RouteData) RouteMatrix {
     set(&m, TAI, VAL, r.taillteann.bangor   + val_sel_base_ban, boat_sel);
 
     // ── R10: Uladh↔Filia via portConnous (Bangor departure) ──────────────────
-    // baseTimes = outpost→bangor + portConnous.fromBangor + portConnous.toFilia
-    // boatTimes = portConnous.wait + portConnous.travel
     const boat_con: u32 = pc.wait + pc.travel;
     const fil_con_base_ban: u32 = pc.fromBangor + pc.toFilia;
     set(&m, TC,  FIL, r.tirChonaill.bangor  + fil_con_base_ban, boat_con);
@@ -196,16 +174,12 @@ pub fn build(route_data: routes_mod.RouteData) RouteMatrix {
     // Belvast→Cobh: portBelvast.toBelvast + portBelvast.fromCobh (both walk legs)
     // Cobh→Bangor: r.cobh.bangor (= r.bangor.cobh, symmetric)
     // Bangor→Sella→Vales: portSella.fromBangor + portSella.toVales
-    // baseTimes = pb.toBelvast + pb.fromCobh + r.bangor.cobh + ps.fromBangor + ps.toVales
-    // boatTimes = pb.wait + pb.travel + ps.wait + ps.travel
     const bel_val_base: u32 = pb.toBelvast + pb.fromCobh + r.bangor.cobh + ps.fromBangor + ps.toVales;
     const bel_val_boat: u32 = pb.wait + pb.travel + ps.wait + ps.travel;
     set(&m, BEL, VAL, bel_val_base, bel_val_boat);
 
     // ── R12: Belvast↔Filia via portBelvast reverse + portConnous ─────────────
     // Same Belvast→Cobh→Bangor walk, then portConnous→Filia
-    // baseTimes = pb.toBelvast + pb.fromCobh + r.bangor.cobh + pc.fromBangor + pc.toFilia
-    // boatTimes = pb.wait + pb.travel + pc.wait + pc.travel
     const bel_fil_base: u32 = pb.toBelvast + pb.fromCobh + r.bangor.cobh + pc.fromBangor + pc.toFilia;
     const bel_fil_boat: u32 = pb.wait + pb.travel + pc.wait + pc.travel;
     set(&m, BEL, FIL, bel_fil_base, bel_fil_boat);
